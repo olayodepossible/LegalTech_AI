@@ -3,6 +3,14 @@ import type { Activity, ActivityType, ChatMessage } from "@/types/app";
 const activitiesKey = (userId: string) =>
   `legaltech_activities_v2_${userId}`;
 const chatKey = (userId: string) => `legaltech_chat_v2_${userId}`;
+const contractChatKey = (userId: string) =>
+  `legaltech_chat_contract_v1_${userId}`;
+
+export type ChatScope = "general" | "contract";
+
+function messagesKey(userId: string, scope: ChatScope): string {
+  return scope === "contract" ? contractChatKey(userId) : chatKey(userId);
+}
 
 function safeParse<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback;
@@ -40,21 +48,25 @@ export function logActivity(
   return entry;
 }
 
-export function getChatMessages(userId: string): ChatMessage[] {
+export function getChatMessages(
+  userId: string,
+  scope: ChatScope = "general",
+): ChatMessage[] {
   if (typeof window === "undefined") return [];
-  return safeParse(localStorage.getItem(chatKey(userId)), []);
+  return safeParse(localStorage.getItem(messagesKey(userId, scope)), []);
 }
 
 export function appendChatMessage(
   userId: string,
   message: ChatMessage,
+  scope: ChatScope = "general",
 ): ChatMessage[] {
-  const list = getChatMessages(userId);
+  const list = getChatMessages(userId, scope);
   const next = [...list, message];
-  localStorage.setItem(chatKey(userId), JSON.stringify(next));
+  localStorage.setItem(messagesKey(userId, scope), JSON.stringify(next));
   return next;
 }
 
-export function clearChat(userId: string): void {
-  localStorage.removeItem(chatKey(userId));
+export function clearChat(userId: string, scope: ChatScope = "general"): void {
+  localStorage.removeItem(messagesKey(userId, scope));
 }

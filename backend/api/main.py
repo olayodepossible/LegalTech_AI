@@ -12,7 +12,7 @@ from decimal import Decimal
 import uuid
 import re
 
-from fastapi import FastAPI, HTTPException, Depends, status, Request
+from fastapi import FastAPI, HTTPException, Depends, status, Request, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
@@ -27,9 +27,10 @@ from src.schemas import (
     UserCreate,
     AccountCreate,
     PositionCreate,
-    JobCreate, JobUpdate,
-    JobType, JobStatus
 )
+
+from contract_analyst.schemas import ContractAnalysisResult
+from contract_analyst.service import analyze_contract_bytes
 
 # Load environment variables
 load_dotenv(override=True)
@@ -70,8 +71,8 @@ def _schema_missing_response(exc: BaseException) -> Optional[HTTPException]:
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="FinPlex Financial Advisor API",
-    description="Backend API for AI-powered financial planning",
+    title="Legal Companion API",
+    description="Backend API for AI-powered Legal Companion",
     version="1.0.0"
 )
 
@@ -128,7 +129,6 @@ db = Database()
 
 # SQS — region must match the queue URL (cross-region clients get errors)
 SQS_QUEUE_URL = os.getenv("SQS_QUEUE_URL", "").strip()
-
 
 def _sqs_region_from_queue_url(queue_url: str) -> str:
     m = re.search(r"sqs\.([a-z0-9-]+)\.amazonaws\.com", queue_url or "")
@@ -270,9 +270,9 @@ async def update_user(user_update: UserUpdate, clerk_user_id: str = Depends(get_
         logger.error(f"Error updating user: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/accounts")
+@app.get("/api/activity-history")
 async def list_accounts(clerk_user_id: str = Depends(get_current_user_id)):
-    """List user's accounts"""
+    """List user's activity history"""
 
     try:
         # Get accounts for user
@@ -283,7 +283,7 @@ async def list_accounts(clerk_user_id: str = Depends(get_current_user_id)):
         logger.error(f"Error listing accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/accounts")
+@app.post("/api/activity-history")
 async def create_account(account: AccountCreate, clerk_user_id: str = Depends(get_current_user_id)):
     """Create new account"""
 
@@ -309,7 +309,7 @@ async def create_account(account: AccountCreate, clerk_user_id: str = Depends(ge
         logger.error(f"Error creating account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.put("/api/accounts/{account_id}")
+@app.put("/api/activity-history/{account_id}")
 async def update_account(account_id: str, account_update: AccountUpdate, clerk_user_id: str = Depends(get_current_user_id)):
     """Update account"""
 
@@ -337,37 +337,48 @@ async def update_account(account_id: str, account_update: AccountUpdate, clerk_u
         logger.error(f"Error updating account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.delete("/api/accounts/{account_id}")
-async def delete_account(account_id: str, clerk_user_id: str = Depends(get_current_user_id)):
-    """Delete an account and all its positions"""
+
+@app.post("/api/contracts/analyze", response_model=ContractAnalysisResult)
+async def analyze_contract_document(
+    file: UploadFile = File(...),
+    message: str = Form(default=""),
+    language: str = Form(default="en"),
+    clerk_user_id: str = Depends(get_current_user_id),
+) -> ContractAnalysisResult:
+    """
+    Contract analysis (internal `contract_analyst` package). Only this API exposes the route.
+    Requires OPENAI_API_KEY.
+    """
+    _ = clerk_user_id
+    try:
+        body = await file.read()
+    except Exception as e:
+        logger.error("contract upload read failed: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read uploaded file") from e
+
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file")
 
     try:
-        # Verify account belongs to user
-        account = db.accounts.find_by_id(account_id)
-        if not account:
-            raise HTTPException(status_code=404, detail="Account not found")
+        return await analyze_contract_bytes(
+            data=body,
+            filename=file.filename or "document",
+            user_message=message or None,
+            language=language or None,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        detail = str(e)
+        if "OPENAI_API_KEY" in detail:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Contract analysis is not configured (missing API key).",
+            ) from e
+        raise HTTPException(status_code=500, detail=detail) from e
 
-        # Verify ownership - accounts table stores clerk_user_id directly
-        if account.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
 
-        # Delete all positions first (due to foreign key constraint)
-        positions = db.positions.find_by_account(account_id)
-        for position in positions:
-            db.positions.delete(position['id'])
-
-        # Delete the account
-        db.accounts.delete(account_id)
-
-        return {"message": "Account deleted successfully"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/accounts/{account_id}/positions")
+@app.get("/api/activity-history/{account_id}/positions")
 async def list_positions(account_id: str, clerk_user_id: str = Depends(get_current_user_id)):
     """Get positions for account"""
 
@@ -401,440 +412,7 @@ async def list_positions(account_id: str, clerk_user_id: str = Depends(get_curre
         logger.error(f"Error listing positions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/positions")
-async def create_position(position: PositionCreate, clerk_user_id: str = Depends(get_current_user_id)):
-    """Create position"""
 
-    try:
-        # Verify account belongs to user
-        account = db.accounts.find_by_id(position.account_id)
-        if not account:
-            raise HTTPException(status_code=404, detail="Account not found")
-
-        # Verify ownership - accounts table stores clerk_user_id directly
-        if account.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        # Check if instrument exists, if not create it
-        instrument = db.instruments.find_by_symbol(position.symbol.upper())
-        if not instrument:
-            logger.info(f"Creating new instrument: {position.symbol.upper()}")
-            # Create a basic instrument entry with default allocations
-            # Import the schema from database
-            from src.schemas import InstrumentCreate
-
-            # Determine type based on common patterns
-            symbol_upper = position.symbol.upper()
-            if len(symbol_upper) <= 5 and symbol_upper.isalpha():
-                instrument_type = "stock"
-            else:
-                instrument_type = "etf"
-
-            # Create instrument with basic default allocations
-            # These can be updated later by the tagger agent
-            new_instrument = InstrumentCreate(
-                symbol=symbol_upper,
-                name=f"{symbol_upper} - User Added",  # Basic name, can be updated later
-                instrument_type=instrument_type,
-                current_price=Decimal("0.00"),  # Price will be updated by background processes
-                allocation_regions={"north_america": 100.0},  # Default to 100% NA
-                allocation_sectors={"other": 100.0},  # Default to 100% other
-                allocation_asset_class={"equity": 100.0} if instrument_type == "stock" else {"fixed_income": 100.0}
-            )
-
-            db.instruments.create_instrument(new_instrument)
-
-        # Add position
-        position_id = db.positions.add_position(
-            account_id=position.account_id,
-            symbol=position.symbol.upper(),
-            quantity=position.quantity
-        )
-
-        # Return created position
-        created_position = db.positions.find_by_id(position_id)
-        return created_position
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating position: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/positions/{position_id}")
-async def update_position(position_id: str, position_update: PositionUpdate, clerk_user_id: str = Depends(get_current_user_id)):
-    """Update position"""
-
-    try:
-        # Get position and verify ownership
-        position = db.positions.find_by_id(position_id)
-        if not position:
-            raise HTTPException(status_code=404, detail="Position not found")
-
-        account = db.accounts.find_by_id(position['account_id'])
-        if not account:
-            raise HTTPException(status_code=404, detail="Account not found")
-
-        # Verify ownership - accounts table stores clerk_user_id directly
-        if account.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        # Update position
-        update_data = position_update.model_dump(exclude_unset=True)
-        db.positions.update(position_id, update_data)
-
-        # Return updated position
-        updated_position = db.positions.find_by_id(position_id)
-        return updated_position
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating position: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/positions/{position_id}")
-async def delete_position(position_id: str, clerk_user_id: str = Depends(get_current_user_id)):
-    """Delete position"""
-
-    try:
-        # Get position and verify ownership
-        position = db.positions.find_by_id(position_id)
-        if not position:
-            raise HTTPException(status_code=404, detail="Position not found")
-
-        account = db.accounts.find_by_id(position['account_id'])
-        if not account:
-            raise HTTPException(status_code=404, detail="Account not found")
-
-        # Verify ownership - accounts table stores clerk_user_id directly
-        if account.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        db.positions.delete(position_id)
-        return {"message": "Position deleted"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting position: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/instruments")
-async def list_instruments(clerk_user_id: str = Depends(get_current_user_id)):
-    """Get all available instruments for autocomplete"""
-
-    try:
-        instruments = db.instruments.find_all()
-        # Return simplified list for autocomplete
-        return [
-            {
-                "symbol": inst["symbol"],
-                "name": inst["name"],
-                "instrument_type": inst["instrument_type"],
-                "current_price": float(inst["current_price"]) if inst.get("current_price") else None
-            }
-            for inst in instruments
-        ]
-    except Exception as e:
-        logger.error(f"Error fetching instruments: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/analyze", response_model=AnalyzeResponse)
-async def trigger_analysis(request: AnalyzeRequest, clerk_user_id: str = Depends(get_current_user_id)):
-    """Create a job record and enqueue it for the planner (SQS)."""
-    StructuredLogger.log_event(
-        "ANALYSIS_TRIGGERED",
-        clerk_user_id,
-        details={"clerk_user_id": clerk_user_id},
-    )
-
-    try:
-        user = db.users.find_by_clerk_id(clerk_user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        payload = request.model_dump(mode="json")
-        job_id = db.jobs.create_job(
-            clerk_user_id=clerk_user_id,
-            job_type="portfolio_analysis",
-            request_payload=payload,
-        )
-        if not job_id:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to create analysis job in the database.",
-            )
-
-        if SQS_QUEUE_URL:
-            message = {
-                "job_id": str(job_id),
-                "clerk_user_id": clerk_user_id,
-                "analysis_type": payload.get("analysis_type", "portfolio"),
-                "options": payload.get("options") or {},
-            }
-            try:
-                _sqs_client_for_queue(SQS_QUEUE_URL).send_message(
-                    QueueUrl=SQS_QUEUE_URL,
-                    MessageBody=json.dumps(message),
-                )
-                logger.info("Sent analysis job to SQS: %s", job_id)
-            except ClientError as e:
-                logger.error("SQS send_message failed: %s", e)
-                code = e.response.get("Error", {}).get("Code", "")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Job created but could not be queued ({code}). Check API Lambda IAM and SQS_QUEUE_URL region.",
-                ) from e
-        else:
-            logger.warning("SQS_QUEUE_URL not configured, job created but not queued")
-
-        return AnalyzeResponse(
-            job_id=str(job_id),
-            message="Analysis started. Check job status for results.",
-        )
-
-    except HTTPException:
-        raise
-    except ClientError as e:
-        missing = _schema_missing_response(e)
-        if missing:
-            raise missing
-        logger.error("Error triggering analysis: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-    except Exception as e:
-        missing = _schema_missing_response(e)
-        if missing:
-            raise missing
-        logger.error("Error triggering analysis: %s", e)
-        raise HTTPException(status_code=500, detail=str(e)) from e
-
-@app.get("/api/jobs/{job_id}")
-async def get_job_status(job_id: str, clerk_user_id: str = Depends(get_current_user_id)):
-    """Get job status and results"""
-
-    try:
-        # Get job
-        job = db.jobs.find_by_id(job_id)
-        if not job:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        # Verify job belongs to user - jobs table stores clerk_user_id directly
-        if job.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        return job
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting job status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/jobs")
-async def list_jobs(clerk_user_id: str = Depends(get_current_user_id)):
-    """List user's analysis jobs"""
-
-    try:
-        # Get jobs for this user (with higher limit to avoid missing recent jobs)
-        user_jobs = db.jobs.find_by_user(clerk_user_id, limit=100)
-        # Sort by created_at descending (most recent first)
-        user_jobs.sort(key=lambda x: x.get('created_at', ''), reverse=True)
-        return {"jobs": user_jobs}
-
-    except Exception as e:
-        logger.error(f"Error listing jobs: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/reset-accounts")
-async def reset_accounts(clerk_user_id: str = Depends(get_current_user_id)):
-    """Delete all accounts for the current user"""
-
-    try:
-        # Get user
-        user = db.users.find_by_clerk_id(clerk_user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Get all accounts for user
-        accounts = db.accounts.find_by_user(clerk_user_id)
-
-        # Delete each account (positions will cascade delete)
-        deleted_count = 0
-        for account in accounts:
-            try:
-                # Positions are deleted automatically via CASCADE
-                db.accounts.delete(account['id'])
-                deleted_count += 1
-            except Exception as e:
-                logger.warning(f"Could not delete account {account['id']}: {e}")
-
-        return {
-            "message": f"Deleted {deleted_count} account(s)",
-            "accounts_deleted": deleted_count
-        }
-
-    except Exception as e:
-        logger.error(f"Error resetting accounts: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/populate-test-data")
-async def populate_test_data(clerk_user_id: str = Depends(get_current_user_id)):
-    """Populate test data for the current user"""
-
-    try:
-        # Get user
-        user = db.users.find_by_clerk_id(clerk_user_id)
-        if not user:
-            raise HTTPException(status_code=404, detail="User not found")
-
-        # Define missing instruments that might not be in the database
-        missing_instruments = {
-            "AAPL": {
-                "name": "Apple Inc.",
-                "type": "stock",
-                "current_price": 195.89,
-                "allocation_regions": {"north_america": 100},
-                "allocation_sectors": {"technology": 100},
-                "allocation_asset_class": {"equity": 100}
-            },
-            "AMZN": {
-                "name": "Amazon.com Inc.",
-                "type": "stock",
-                "current_price": 178.35,
-                "allocation_regions": {"north_america": 100},
-                "allocation_sectors": {"consumer_discretionary": 100},
-                "allocation_asset_class": {"equity": 100}
-            },
-            "NVDA": {
-                "name": "NVIDIA Corporation",
-                "type": "stock",
-                "current_price": 522.74,
-                "allocation_regions": {"north_america": 100},
-                "allocation_sectors": {"technology": 100},
-                "allocation_asset_class": {"equity": 100}
-            },
-            "MSFT": {
-                "name": "Microsoft Corporation",
-                "type": "stock",
-                "current_price": 430.82,
-                "allocation_regions": {"north_america": 100},
-                "allocation_sectors": {"technology": 100},
-                "allocation_asset_class": {"equity": 100}
-            },
-            "GOOGL": {
-                "name": "Alphabet Inc. Class A",
-                "type": "stock",
-                "current_price": 173.69,
-                "allocation_regions": {"north_america": 100},
-                "allocation_sectors": {"technology": 100},
-                "allocation_asset_class": {"equity": 100}
-            },
-        }
-
-        # Check and add missing instruments
-        for symbol, info in missing_instruments.items():
-            existing = db.instruments.find_by_symbol(symbol)
-            if not existing:
-                try:
-                    from src.schemas import InstrumentCreate
-
-                    instrument_data = InstrumentCreate(
-                        symbol=symbol,
-                        name=info["name"],
-                        instrument_type=info["type"],
-                        current_price=Decimal(str(info["current_price"])),
-                        allocation_regions=info["allocation_regions"],
-                        allocation_sectors=info["allocation_sectors"],
-                        allocation_asset_class=info["allocation_asset_class"]
-                    )
-                    db.instruments.create_instrument(instrument_data)
-                    logger.info(f"Added missing instrument: {symbol}")
-                except Exception as e:
-                    logger.warning(f"Could not add instrument {symbol}: {e}")
-
-        # Create accounts with test data
-        accounts_data = [
-            {
-                "name": "401k Long-term",
-                "purpose": "Primary retirement savings account with employer match",
-                "cash": 5000.00,
-                "positions": [
-                    ("SPY", 150),   # S&P 500 ETF
-                    ("VTI", 100),   # Total Stock Market ETF
-                    ("BND", 200),   # Bond ETF
-                    ("QQQ", 75),    # Nasdaq ETF
-                    ("IWM", 50),    # Small Cap ETF
-                ]
-            },
-            {
-                "name": "Roth IRA",
-                "purpose": "Tax-free retirement growth account",
-                "cash": 2500.00,
-                "positions": [
-                    ("VTI", 80),    # Total Stock Market ETF
-                    ("VXUS", 60),   # International Stock ETF
-                    ("VNQ", 40),    # Real Estate ETF
-                    ("GLD", 25),    # Gold ETF
-                    ("TLT", 30),    # Long-term Treasury ETF
-                    ("VIG", 45),    # Dividend Growth ETF
-                ]
-            },
-            {
-                "name": "Brokerage Account",
-                "purpose": "Taxable investment account for individual stocks",
-                "cash": 10000.00,
-                "positions": [
-                    ("TSLA", 15),   # Tesla
-                    ("AAPL", 50),   # Apple
-                    ("AMZN", 10),   # Amazon
-                    ("NVDA", 25),   # Nvidia
-                    ("MSFT", 30),   # Microsoft
-                    ("GOOGL", 20),  # Google
-                ]
-            }
-        ]
-
-        created_accounts = []
-        for account_data in accounts_data:
-            # Create account
-            account_id = db.accounts.create_account(
-                clerk_user_id=clerk_user_id,
-                account_name=account_data["name"],
-                account_purpose=account_data["purpose"],
-                cash_balance=Decimal(str(account_data["cash"]))
-            )
-
-            # Add positions
-            for symbol, quantity in account_data["positions"]:
-                try:
-                    db.positions.add_position(
-                        account_id=account_id,
-                        symbol=symbol,
-                        quantity=Decimal(str(quantity))
-                    )
-                except Exception as e:
-                    logger.warning(f"Could not add position {symbol}: {e}")
-
-            created_accounts.append(account_id)
-
-        # Get all accounts with their positions for summary
-        all_accounts = []
-        for account_id in created_accounts:
-            account = db.accounts.find_by_id(account_id)
-            positions = db.positions.find_by_account(account_id)
-            account['positions'] = positions
-            all_accounts.append(account)
-
-        return {
-            "message": "Test data populated successfully",
-            "accounts_created": len(created_accounts),
-            "accounts": all_accounts
-        }
-
-    except Exception as e:
-        logger.error(f"Error populating test data: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 # Lambda handler
 handler = Mangum(app)

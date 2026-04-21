@@ -73,6 +73,19 @@ def main():
         else:
             print(f"Warning: Database package not found at {database_src}")
 
+        # Contract analysis library (imported by api.main only — not a separate HTTP service)
+        ca_src = backend_dir / "contract_analyst" / "contract_analyst"
+        ca_dst = package_dir / "contract_analyst"
+        if ca_src.exists():
+            shutil.copytree(
+                ca_src,
+                ca_dst,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            )
+            print(f"Copied contract_analyst package from {ca_src}")
+        else:
+            print(f"Warning: contract_analyst package not found at {ca_src}")
+
         # Create requirements.txt from pyproject.toml
         requirements_file = package_dir / "requirements.txt"
         with open(requirements_file, "w") as f:
@@ -84,6 +97,9 @@ def main():
             f.write("fastapi-clerk-auth>=0.0.7\n")
             f.write("pydantic>=2.0.0\n")
             f.write("python-dotenv>=1.0.0\n")
+            f.write("python-multipart>=0.0.9\n")
+            f.write("openai>=1.59.0\n")
+            f.write("pypdf>=5.1.0\n")
 
         # Create Dockerfile
         dockerfile_content = """

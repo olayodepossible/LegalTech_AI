@@ -8,6 +8,7 @@ import { usePathname } from "next/navigation";
 const nav = [
   { href: "/dashboard", label: "Dashboard" },
   { href: "/chat", label: "Chat" },
+  { href: "/chat/contract", label: "Contract analysis" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
