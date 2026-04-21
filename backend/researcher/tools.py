@@ -38,7 +38,7 @@ def ingest_with_retries(document: Dict[str, Any]) -> Dict[str, Any]:
 @function_tool
 def ingest_financial_document(topic: str, analysis: str) -> Dict[str, Any]:
     """
-    Ingest a financial document into the Alex knowledge base.
+    Ingest a legal document into the legal knowledge base.
     
     Args:
         topic: The topic or subject of the analysis (e.g., "AAPL Stock Analysis", "Retirement Planning Guide")

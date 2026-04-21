@@ -1,29 +1,30 @@
 [project]
 name = "legaltech-backend"
 version = "0.1.0"
-description = "LegalTech AI — FastAPI service-layer backend (contracts, research, predictions, RAG, documents)"
-requires-python = ">=3.11"
+description = "LegalTech AI — FastAPI service-layer backend"
+requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.32.0",
     "pydantic-settings>=2.6.0",
     "python-multipart>=0.0.12",
     "httpx>=0.27.0",
+    "database",
+    "boto3>=1.40.29",
+    "langfuse>=3.3.4",
+    "openai-agents>=0.3.0",
+    "pydantic-ai>=1.0.6",
+    "python-dotenv>=1.1.1",
 ]
 
-[project.scripts]
-legaltech-api = "legaltech_backend.main:run"
+[tool.uv.workspace]
+members = [
+    "database",
+    "api",
+    "scheduler",
+]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[tool.uv.sources]
+database = { workspace = true }
 
-[tool.hatch.build.targets.wheel]
-packages = ["legaltech_backend"]
 
-[tool.ruff]
-line-length = 100
-target-version = "py311"
-
-[tool.ruff.lint]
-select = ["E", "F", "I", "UP"]

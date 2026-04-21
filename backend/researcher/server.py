@@ -1,5 +1,5 @@
 """
-Alex Researcher Service - Investment Advice Agent
+Legal Researcher Service - Legal Advice Agent
 """
 
 import os
