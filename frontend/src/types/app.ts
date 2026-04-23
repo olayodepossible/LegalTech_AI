@@ -5,6 +5,7 @@ export type ActivityType =
   | "visit_dashboard"
   | "visit_chat"
   | "visit_contract_analysis"
+  | "visit_rag"
   | "chat_message"
   | "document_upload";
 

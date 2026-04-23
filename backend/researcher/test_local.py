@@ -6,7 +6,7 @@ Test the researcher locally before deployment
 import asyncio
 from context import get_agent_instructions, DEFAULT_RESEARCH_PROMPT
 from mcp_servers import create_playwright_mcp_server
-from tools import ingest_financial_document
+from tools import ingest_legal_document
 from agents import Agent, Runner
 from dotenv import load_dotenv
 
@@ -27,7 +27,7 @@ async def test_local():
                 name="Alex Investment Researcher",
                 instructions=get_agent_instructions(),
                 model="gpt-4.1-mini",
-                tools=[ingest_financial_document],
+                tools=[ingest_legal_document],
                 mcp_servers=[playwright_mcp],
             )
 

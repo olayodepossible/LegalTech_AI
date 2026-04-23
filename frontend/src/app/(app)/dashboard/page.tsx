@@ -1,11 +1,34 @@
 "use client";
 
+import {
+  getActivityHistory,
+  getOrCreateUser,
+  type ActivityHistoryRow,
+} from "@/lib/api";
 import { journeyProgress } from "@/lib/journey";
 import { getActivities, logActivity } from "@/lib/local-store";
 import type { Activity } from "@/types/app";
-import { useUser } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/nextjs";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
+
+const ACTIVITY_PAGE_SIZE = 5;
+
+type HistoryListItem = {
+  id: string;
+  label: string;
+  detail?: string;
+  at: string;
+};
+
+function mapApiRow(r: ActivityHistoryRow, i: number): HistoryListItem {
+  return {
+    id: String(r.id ?? `api-${i}`),
+    label: (r.label ?? r.account_name ?? "Activity") as string,
+    detail: (r.details ?? r.activity_type ?? undefined) as string | undefined,
+    at: (r.created_at ?? r.activity_date ?? new Date().toISOString()) as string,
+  };
+}
 
 function formatTime(iso: string) {
   try {
@@ -20,7 +43,13 @@ function formatTime(iso: string) {
 
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const [activities, setActivities] = useState<Activity[]>([]);
+  const [activityPage, setActivityPage] = useState(1);
+  const [apiUser, setApiUser] = useState<Record<string, unknown> | null>(null);
+  const [apiHistory, setApiHistory] = useState<
+    ActivityHistoryRow[] | "pending" | "unavailable"
+  >("pending");
 
   useEffect(() => {
     if (!isLoaded || !user?.id) return;
@@ -33,13 +62,74 @@ export default function DashboardPage() {
     setActivities(getActivities(user.id));
   }, [isLoaded, user?.id]);
 
+  useEffect(() => {
+    if (!isLoaded || !user?.id) return;
+    let cancelled = false;
+    (async () => {
+      const token = () => getToken();
+      try {
+        const [u, hist] = await Promise.all([
+          getOrCreateUser(token),
+          getActivityHistory(token),
+        ]);
+        if (cancelled) return;
+        setApiUser(u.user);
+        setApiHistory(hist);
+      } catch {
+        if (!cancelled) setApiHistory("unavailable");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLoaded, user?.id, getToken]);
+
+  const historyRows: HistoryListItem[] = useMemo(() => {
+    if (apiHistory === "pending" || apiHistory === "unavailable") {
+      return activities.map((a) => ({
+        id: a.id,
+        label: a.label,
+        detail: a.detail,
+        at: a.at,
+      }));
+    }
+    return apiHistory.map(mapApiRow);
+  }, [apiHistory, activities]);
+
+  const activityTotalPages = Math.max(
+    1,
+    Math.ceil(historyRows.length / ACTIVITY_PAGE_SIZE),
+  );
+
+  useEffect(() => {
+    setActivityPage((p) => Math.min(p, activityTotalPages));
+  }, [historyRows.length, activityTotalPages]);
+
+  const pagedActivities = useMemo(() => {
+    const start = (activityPage - 1) * ACTIVITY_PAGE_SIZE;
+    return historyRows.slice(start, start + ACTIVITY_PAGE_SIZE);
+  }, [historyRows, activityPage]);
+
+  const rangeStart =
+    historyRows.length === 0
+      ? 0
+      : (activityPage - 1) * ACTIVITY_PAGE_SIZE + 1;
+  const rangeEnd = Math.min(
+    activityPage * ACTIVITY_PAGE_SIZE,
+    historyRows.length,
+  );
+
   const progress = useMemo(
     () => journeyProgress(activities),
     [activities],
   );
 
-  const email = user?.primaryEmailAddress?.emailAddress ?? "—";
+  const email =
+    (typeof apiUser?.email === "string" && apiUser.email) ||
+    user?.primaryEmailAddress?.emailAddress ||
+    "—";
   const name =
+    (typeof apiUser?.display_name === "string" && apiUser.display_name) ||
     user?.fullName ||
     user?.firstName ||
     user?.primaryEmailAddress?.emailAddress ||
@@ -135,38 +225,74 @@ export default function DashboardPage() {
           Activity history
         </h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Recent actions stored in your browser for this demo.
+          {Array.isArray(apiHistory)
+            ? "Synced from your account."
+            : "Recent actions in your browser; server history when the API is available."}
         </p>
-        {activities.length === 0 ? (
+        {historyRows.length === 0 ? (
           <p className="mt-8 text-sm text-zinc-500 dark:text-zinc-400">
             No activity yet. Explore the chat or upload a document.
           </p>
         ) : (
-          <ul className="mt-6 divide-y divide-zinc-100 dark:divide-zinc-800">
-            {activities.map((a) => (
-              <li
-                key={a.id}
-                className="flex flex-col gap-1 py-4 first:pt-0 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div>
-                  <p className="font-medium text-zinc-900 dark:text-zinc-100">
-                    {a.label}
-                  </p>
-                  {a.detail ? (
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                      {a.detail}
-                    </p>
-                  ) : null}
-                </div>
-                <time
-                  className="shrink-0 text-xs text-zinc-400 dark:text-zinc-500"
-                  dateTime={a.at}
+          <>
+            <ul className="mt-6 divide-y divide-zinc-100 dark:divide-zinc-800">
+              {pagedActivities.map((a) => (
+                <li
+                  key={a.id}
+                  className="flex flex-col gap-1 py-4 first:pt-0 sm:flex-row sm:items-center sm:justify-between"
                 >
-                  {formatTime(a.at)}
-                </time>
-              </li>
-            ))}
-          </ul>
+                  <div>
+                    <p className="font-medium text-zinc-900 dark:text-zinc-100">
+                      {a.label}
+                    </p>
+                    {a.detail ? (
+                      <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                        {a.detail}
+                      </p>
+                    ) : null}
+                  </div>
+                  <time
+                    className="shrink-0 text-xs text-zinc-400 dark:text-zinc-500"
+                    dateTime={a.at}
+                  >
+                    {formatTime(a.at)}
+                  </time>
+                </li>
+              ))}
+            </ul>
+            <div className="mt-4 flex flex-col gap-3 border-t border-zinc-100 pt-4 dark:border-zinc-800 sm:flex-row sm:items-center sm:justify-between">
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                Showing {rangeStart}–{rangeEnd} of {historyRows.length}
+                {activityTotalPages > 1
+                  ? ` · Page ${activityPage} of ${activityTotalPages}`
+                  : null}
+              </p>
+              {activityTotalPages > 1 ? (
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={activityPage <= 1}
+                    onClick={() => setActivityPage((p) => Math.max(1, p - 1))}
+                    className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 enabled:hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:enabled:hover:bg-zinc-800"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    disabled={activityPage >= activityTotalPages}
+                    onClick={() =>
+                      setActivityPage((p) =>
+                        Math.min(activityTotalPages, p + 1),
+                      )
+                    }
+                    className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-medium text-zinc-800 enabled:hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-200 dark:enabled:hover:bg-zinc-800"
+                  >
+                    Next
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          </>
         )}
       </section>
     </div>

@@ -49,12 +49,13 @@ async def analyze_contract_text(
     language: str | None,
     source_filename: str | None = None,
 ) -> ContractAnalysisResult:
-    api_key = os.getenv("OPENAI_API_KEY", "").strip()
+    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured")
+        raise RuntimeError("OPENROUTER_API_KEY is not configured")
 
     model = os.getenv("OPENAI_CONTRACT_MODEL", "gpt-4o-mini")
-    client = AsyncOpenAI(api_key=api_key)
+    client = AsyncOpenAI(api_key=api_key, base_url=base_url )
 
     lang_hint = (
         f"Respond in {language} where natural for summaries and labels."

@@ -23,11 +23,9 @@ from dotenv import load_dotenv
 from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCredentials
 
 from src import Database
-from src.schemas import (
-    UserCreate,
-    AccountCreate,
-    PositionCreate,
-)
+from src.schemas import (UserCreate, ActivityHistoryCreate)
+
+from openai import AsyncOpenAI
 
 from contract_analyst.schemas import ContractAnalysisResult
 from contract_analyst.service import analyze_contract_bytes
@@ -62,8 +60,6 @@ def _schema_missing_response(exc: BaseException) -> Optional[HTTPException]:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
                 "Database schema is not applied (tables such as 'users' are missing). "
-                "Run Part 5 migrations from backend/database: uv run run_migrations.py "
-                "(see guides/5_database.md)."
             ),
         )
     return None
@@ -165,11 +161,6 @@ class UserUpdate(BaseModel):
     asset_class_targets: Optional[Dict[str, float]] = None
     region_targets: Optional[Dict[str, float]] = None
 
-class AccountUpdate(BaseModel):
-    """Update account"""
-    account_name: Optional[str] = None
-    account_purpose: Optional[str] = None
-    cash_balance: Optional[float] = None
 
 class PositionUpdate(BaseModel):
     """Update position"""
@@ -182,6 +173,41 @@ class AnalyzeRequest(BaseModel):
 class AnalyzeResponse(BaseModel):
     job_id: str
     message: str
+
+
+class LegalChatRequest(BaseModel):
+    message: str = Field(..., min_length=1, max_length=12000)
+    language: str | None = "en"
+
+
+class LegalChatResponse(BaseModel):
+    reply: str
+
+
+class RagDocumentUploadResponse(BaseModel):
+    document_id: str
+    s3_key: str
+    bucket: str
+    size_bytes: int
+    content_type: Optional[str] = None
+    ingestion_queued: bool = False
+    sqs_message_id: Optional[str] = None
+
+
+RAG_DOCUMENTS_BUCKET = os.getenv("RAG_DOCUMENTS_BUCKET", "").strip()
+RAG_S3_KEY_PREFIX = os.getenv("RAG_S3_KEY_PREFIX", "rag-documents").strip().strip("/")
+# Ingestion: Upload → S3 → (this queue) → worker → S3 Vectors. Falls back to SQS_QUEUE_URL.
+RAG_INGESTION_QUEUE_URL = os.getenv("RAG_INGESTION_QUEUE_URL", "").strip()
+
+
+def _safe_client_filename(name: Optional[str]) -> str:
+    if not name:
+        return "document"
+    base = name.replace("\\", "/").split("/")[-1]
+    if ".." in base or not base.strip():
+        return "document"
+    return base[:240]
+
 
 # API Routes
 
@@ -206,16 +232,16 @@ async def get_or_create_user(
 
         # Create new user with defaults from JWT token
         token_data = creds.decoded
+        email = token_data.get('email', "no-email@example.com")
         display_name = token_data.get('name') or token_data.get('email', '').split('@')[0] or "New User"
 
+            
+            
         # Create user with ALL defaults in one operation
         user_data = {
             'clerk_user_id': clerk_user_id,
             'display_name': display_name,
-            'years_until_retirement': 20,
-            'target_retirement_income': 60000,
-            'asset_class_targets': {"equity": 70, "fixed_income": 30},
-            'region_targets': {"north_america": 50, "international": 50}
+            'email': email
         }
 
         db.users.create(user_data, returning="clerk_user_id")
@@ -239,6 +265,47 @@ async def get_or_create_user(
             raise missing
         logger.error(f"Error in get_or_create_user: {e}")
         raise HTTPException(status_code=500, detail="Failed to load user profile")
+
+@app.post("/api/chat", response_model=LegalChatResponse)
+async def legal_chat(
+    body: LegalChatRequest,
+    clerk_user_id: str = Depends(get_current_user_id),
+) -> LegalChatResponse:
+    """
+    General legal Q&A (OpenAI). For structured contract review use RAG and web search.
+    """
+    _ = clerk_user_id
+    key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    base_url = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1").strip()
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Chat is not configured (OPENAI_API_KEY).",
+        )
+    try:
+        client = AsyncOpenAI(api_key=key, base_url=base_url)
+        model = os.getenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
+        lang = body.language or "en"
+        system = (
+            "You are a helpful legal information assistant. "
+            "You are not a lawyer; provide general information and suggest consulting a qualified professional for specific matters. "
+            f"User language preference (ISO-ish code): {lang}."
+        )
+        r = await client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": body.message},
+            ],
+        )
+        text = (r.choices[0].message.content or "").strip() or "…"
+        return LegalChatResponse(reply=text)
+    except Exception as e:
+        logger.exception("legal chat failed: %s", e)
+        raise HTTPException(
+            status_code=500, detail="Chat completion failed. Try again later."
+        ) from e
+
 
 @app.put("/api/user")
 async def update_user(user_update: UserUpdate, clerk_user_id: str = Depends(get_current_user_id)):
@@ -271,21 +338,21 @@ async def update_user(user_update: UserUpdate, clerk_user_id: str = Depends(get_
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/activity-history")
-async def list_accounts(clerk_user_id: str = Depends(get_current_user_id)):
+async def list_account_activity_histories(clerk_user_id: str = Depends(get_current_user_id)):
     """List user's activity history"""
 
     try:
         # Get accounts for user
-        accounts = db.accounts.find_by_user(clerk_user_id)
-        return accounts
+        activity_histories = db.activity_history.find_by_user(clerk_user_id)
+        return activity_histories
 
     except Exception as e:
         logger.error(f"Error listing accounts: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/activity-history")
-async def create_account(account: AccountCreate, clerk_user_id: str = Depends(get_current_user_id)):
-    """Create new account"""
+async def create_account_activity_history(activity: ActivityHistoryCreate, clerk_user_id: str = Depends(get_current_user_id)):
+    """Create new account activity history"""
 
     try:
         # Verify user exists
@@ -294,11 +361,14 @@ async def create_account(account: AccountCreate, clerk_user_id: str = Depends(ge
             raise HTTPException(status_code=404, detail="User not found")
 
         # Create account
-        account_id = db.accounts.create_account(
+        account_id = db.activity_history.create_activity_history(
             clerk_user_id=clerk_user_id,
-            account_name=account.account_name,
-            account_purpose=account.account_purpose,
-            cash_balance=getattr(account, 'cash_balance', Decimal('0'))
+            account_name=activity.account_name,
+            email=activity.email,
+            details=activity.details,
+            label=activity.label,
+            activity_type=activity.activity_type,
+            activity_date=activity.activity_date
         )
 
         # Return created account
@@ -307,34 +377,6 @@ async def create_account(account: AccountCreate, clerk_user_id: str = Depends(ge
 
     except Exception as e:
         logger.error(f"Error creating account: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.put("/api/activity-history/{account_id}")
-async def update_account(account_id: str, account_update: AccountUpdate, clerk_user_id: str = Depends(get_current_user_id)):
-    """Update account"""
-
-    try:
-        # Verify account belongs to user
-        account = db.accounts.find_by_id(account_id)
-        if not account:
-            raise HTTPException(status_code=404, detail="Account not found")
-
-        # Verify ownership - accounts table stores clerk_user_id directly
-        if account.get('clerk_user_id') != clerk_user_id:
-            raise HTTPException(status_code=403, detail="Not authorized")
-
-        # Update account
-        update_data = account_update.model_dump(exclude_unset=True)
-        db.accounts.update(account_id, update_data)
-
-        # Return updated account
-        updated_account = db.accounts.find_by_id(account_id)
-        return updated_account
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error updating account: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -347,7 +389,7 @@ async def analyze_contract_document(
 ) -> ContractAnalysisResult:
     """
     Contract analysis (internal `contract_analyst` package). Only this API exposes the route.
-    Requires OPENAI_API_KEY.
+    Requires OPENROUTER_API_KEY.
     """
     _ = clerk_user_id
     try:
@@ -370,7 +412,7 @@ async def analyze_contract_document(
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
         detail = str(e)
-        if "OPENAI_API_KEY" in detail:
+        if "OPENROUTER_API_KEY" in detail:
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Contract analysis is not configured (missing API key).",
@@ -378,9 +420,98 @@ async def analyze_contract_document(
         raise HTTPException(status_code=500, detail=detail) from e
 
 
-@app.get("/api/activity-history/{account_id}/positions")
+@app.post("/api/rag/documents/upload", response_model=RagDocumentUploadResponse)
+async def upload_rag_document(
+    file: UploadFile = File(...),
+    clerk_user_id: str = Depends(get_current_user_id),
+) -> RagDocumentUploadResponse:
+    """
+    Store an uploaded file in S3 for RAG / ingestion (configure RAG_DOCUMENTS_BUCKET).
+    """
+    if not RAG_DOCUMENTS_BUCKET:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="RAG document storage is not configured (set RAG_DOCUMENTS_BUCKET).",
+        )
+
+    try:
+        body = await file.read()
+    except Exception as e:
+        logger.error("rag document read failed: %s", e)
+        raise HTTPException(status_code=400, detail="Could not read uploaded file") from e
+
+    if not body:
+        raise HTTPException(status_code=400, detail="Empty file")
+
+    safe_name = _safe_client_filename(file.filename)
+    doc_id = str(uuid.uuid4())
+    user_part = re.sub(r"[^a-zA-Z0-9._@+-]+", "_", clerk_user_id)[:128]
+    key = f"{RAG_S3_KEY_PREFIX}/{user_part}/{doc_id}/{safe_name}"
+    region = os.getenv("DEFAULT_AWS_REGION", "eu-west-2")
+    s3 = boto3.client("s3", region_name=region)
+    content_type = file.content_type or "application/octet-stream"
+
+    try:
+        s3.put_object(
+            Bucket=RAG_DOCUMENTS_BUCKET,
+            Key=key,
+            Body=body,
+            ContentType=content_type,
+        )
+    except ClientError as e:
+        logger.exception("RAG S3 put_object failed: %s", e)
+        raise HTTPException(
+            status_code=500, detail="Failed to store document in S3. Check bucket policy and credentials."
+        ) from e
+
+    ingestion_queued = False
+    sqs_message_id: Optional[str] = None
+    queue_url = RAG_INGESTION_QUEUE_URL or SQS_QUEUE_URL
+    if queue_url:
+        payload = {
+            "version": 1,
+            "type": "rag_document_ingest",
+            "document_id": doc_id,
+            "s3_key": key,
+            "bucket": RAG_DOCUMENTS_BUCKET,
+            "clerk_user_id": clerk_user_id,
+            "content_type": content_type,
+            "original_filename": safe_name,
+        }
+        try:
+            qclient = _sqs_client_for_queue(queue_url)
+            sm = qclient.send_message(
+                QueueUrl=queue_url,
+                MessageBody=json.dumps(payload),
+            )
+            ingestion_queued = True
+            sqs_message_id = sm.get("MessageId")
+            logger.info(
+                "rag ingest queued doc_id=%s message_id=%s", doc_id, sqs_message_id
+            )
+        except Exception as e:
+            logger.exception(
+                "RAG SQS send failed; document is in S3 but not queued: %s", e
+            )
+    else:
+        logger.warning(
+            "RAG_INGESTION_QUEUE_URL and SQS_QUEUE_URL are unset; skipping ingest queue (S3 only)."
+        )
+
+    return RagDocumentUploadResponse(
+        document_id=doc_id,
+        s3_key=key,
+        bucket=RAG_DOCUMENTS_BUCKET,
+        size_bytes=len(body),
+        content_type=file.content_type,
+        ingestion_queued=ingestion_queued,
+        sqs_message_id=sqs_message_id,
+    )
+
+
+@app.get("/api/activity-history/{account_id}")
 async def list_positions(account_id: str, clerk_user_id: str = Depends(get_current_user_id)):
-    """Get positions for account"""
+    """Get activity history for account"""
 
     try:
         # Verify account belongs to user

@@ -1,14 +1,14 @@
 "use client";
 
-import { mockAssistantReply } from "@/lib/chat-mock";
+import { postLegalChat } from "@/lib/api";
 import { RESPONSE_LANGUAGES, languageLabel } from "@/lib/languages";
 import {
   appendChatMessage,
   getChatMessages,
   logActivity,
 } from "@/lib/local-store";
-import type { ChatAttachment, ChatMessage } from "@/types/app";
-import { useUser } from "@clerk/nextjs";
+import type { ChatMessage } from "@/types/app";
+import { useAuth, useUser } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 
 function formatTime(iso: string) {
@@ -24,14 +24,13 @@ function formatTime(iso: string) {
 
 export default function ChatPage() {
   const { user, isLoaded } = useUser();
+  const { getToken } = useAuth();
   const userId = user?.id;
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [language, setLanguage] = useState("en");
-  const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!userId) return;
@@ -43,42 +42,16 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  async function onPickFiles(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = e.target.files ? Array.from(e.target.files) : [];
-    setPendingFiles((prev) => [...prev, ...files]);
-    e.target.value = "";
-  }
-
-  function removePending(i: number) {
-    setPendingFiles((prev) => prev.filter((_, idx) => idx !== i));
-  }
-
   async function handleSend() {
-    if (!userId || (!input.trim() && pendingFiles.length === 0) || sending)
-      return;
+    if (!userId || !input.trim() || sending) return;
 
     setSending(true);
-    const attachments: ChatAttachment[] = pendingFiles.map((f) => ({
-      name: f.name,
-      size: f.size,
-      type: f.type || "application/octet-stream",
-    }));
-
-    if (pendingFiles.length > 0) {
-      logActivity(
-        userId,
-        "document_upload",
-        "Attached document(s) in chat",
-        pendingFiles.map((f) => f.name).join(", "),
-      );
-    }
 
     const userMsg: ChatMessage = {
       id: crypto.randomUUID(),
       role: "user",
-      content: input.trim() || "(Attachment only)",
+      content: input.trim(),
       languageCode: language,
-      attachments: attachments.length ? attachments : undefined,
       at: new Date().toISOString(),
     };
 
@@ -93,21 +66,33 @@ export default function ChatPage() {
 
     const text = userMsg.content;
     setInput("");
-    setPendingFiles([]);
 
-    await new Promise((r) => setTimeout(r, 400));
-
-    const replyText = mockAssistantReply(text, language, attachments);
-    const assistantMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "assistant",
-      content: replyText,
-      languageCode: language,
-      at: new Date().toISOString(),
-    };
-    stored = appendChatMessage(userId, assistantMsg);
-    setMessages(stored);
-    setSending(false);
+    try {
+      const { reply } = await postLegalChat(text, language, getToken);
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: reply,
+        languageCode: language,
+        at: new Date().toISOString(),
+      };
+      stored = appendChatMessage(userId, assistantMsg);
+      setMessages(stored);
+    } catch (e) {
+      const msg =
+        e instanceof Error ? e.message : "Could not get a response from the API.";
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        content: `**Error:** ${msg}`,
+        languageCode: language,
+        at: new Date().toISOString(),
+      };
+      stored = appendChatMessage(userId, assistantMsg);
+      setMessages(stored);
+    } finally {
+      setSending(false);
+    }
   }
 
   function onFormSubmit(e: React.FormEvent) {
@@ -121,10 +106,11 @@ export default function ChatPage() {
     <div className="flex h-[calc(100vh-8rem)] min-h-[420px] flex-col gap-4 sm:h-[calc(100vh-6rem)]">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-50">
-          Legal assistant
+          Legal Companion
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Ask questions, attach documents, and choose the response language.
+          Answers come from the Legal Companion API (POST /api/chat). Use
+          Contract analysis in the sidebar to upload documents.
         </p>
       </div>
 
@@ -146,27 +132,14 @@ export default function ChatPage() {
               ))}
             </select>
           </label>
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            className="hidden"
-            onChange={onPickFiles}
-          />
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            className="rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-sm font-medium text-zinc-800 hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-200 dark:hover:bg-zinc-700"
-          >
-            Upload document
-          </button>
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
           {messages.length === 0 ? (
             <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
-              Start by typing a legal question or uploading a contract for
-              context. Responses are mocked until you connect your API.
+              Start by typing a legal question. The backend must expose POST
+              /api/chat with OPENAI_API_KEY. For document uploads, open
+              Contract analysis.
             </p>
           ) : (
             <ul className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -212,32 +185,6 @@ export default function ChatPage() {
           )}
         </div>
 
-        {pendingFiles.length > 0 ? (
-          <div className="border-t border-zinc-100 px-4 py-2 dark:border-zinc-800">
-            <p className="mb-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
-              Pending attachments
-            </p>
-            <ul className="flex flex-wrap gap-2">
-              {pendingFiles.map((f, i) => (
-                <li
-                  key={`${f.name}-${i}`}
-                  className="flex items-center gap-1 rounded-full bg-indigo-50 px-3 py-1 text-xs text-indigo-900 dark:bg-indigo-950 dark:text-indigo-200"
-                >
-                  <span className="max-w-[10rem] truncate">{f.name}</span>
-                  <button
-                    type="button"
-                    onClick={() => removePending(i)}
-                    className="ml-1 rounded-full p-0.5 hover:bg-indigo-200 dark:hover:bg-indigo-900"
-                    aria-label={`Remove ${f.name}`}
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </div>
-        ) : null}
-
         <form
           onSubmit={onFormSubmit}
           className="border-t border-zinc-100 p-4 dark:border-zinc-800"
@@ -258,9 +205,7 @@ export default function ChatPage() {
             />
             <button
               type="submit"
-              disabled={
-                sending || (!input.trim() && pendingFiles.length === 0)
-              }
+              disabled={sending || !input.trim()}
               className="shrink-0 self-end rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {sending ? "…" : "Send"}

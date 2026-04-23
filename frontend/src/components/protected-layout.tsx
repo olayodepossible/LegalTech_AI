@@ -19,5 +19,9 @@ export function ProtectedLayout({ children }: { children: React.ReactNode }) {
     return null;
   }
 
-  return <AppShell>{children}</AppShell>;
+  return (
+    <div className="flex min-h-full w-full flex-1 flex-col">
+      <AppShell>{children}</AppShell>
+    </div>
+  );
 }

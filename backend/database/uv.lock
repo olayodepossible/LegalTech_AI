@@ -3,7 +3,7 @@ revision = 3
 requires-python = ">=3.12"
 
 [[package]]
-name = "alex-database"
+name = "legal_comapanion-database"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [

@@ -1,5 +1,5 @@
 [project]
-name = "alex-database"
+name = "legal_comapanion-database"
 version = "0.1.0"
 description = "Database package for FinPlex Financial Planner with Aurora Data API"
 requires-python = ">=3.12"

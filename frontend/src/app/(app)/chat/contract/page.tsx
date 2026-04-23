@@ -1,6 +1,6 @@
 "use client";
 
-import { getApiBaseUrl } from "@/lib/api-base";
+import { postContractAnalyze, type ContractAnalysisResult } from "@/lib/api";
 import { RESPONSE_LANGUAGES, languageLabel } from "@/lib/languages";
 import { appendChatMessage, getChatMessages, logActivity } from "@/lib/local-store";
 import type { ChatMessage } from "@/types/app";
@@ -8,13 +8,6 @@ import { useAuth, useUser } from "@clerk/nextjs";
 import { useEffect, useRef, useState } from "react";
 
 type ConcernItem = { title: string; detail: string };
-
-type ContractAnalysisResult = {
-  executive_summary: string;
-  pain_points: ConcernItem[];
-  red_flags: ConcernItem[];
-  potential_risks: ConcernItem[];
-};
 
 function formatAnalysisMarkdown(data: ContractAnalysisResult): string {
   const lines: string[] = [];
@@ -121,43 +114,12 @@ export default function ContractAnalysisPage() {
     setPendingFiles([]);
 
     try {
-      const token = await getToken();
-      if (!token) {
-        throw new Error("Not signed in");
-      }
-      const form = new FormData();
-      form.append("file", file);
-      form.append("message", text);
-      form.append("language", language);
-
-      const res = await fetch(
-        `${getApiBaseUrl()}/api/contracts/analyze`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}` },
-          body: form,
-        },
+      const data = await postContractAnalyze(
+        file,
+        text,
+        language,
+        () => getToken(),
       );
-
-      const raw = await res.text();
-      let payload: unknown;
-      try {
-        payload = JSON.parse(raw) as unknown;
-      } catch {
-        throw new Error(raw || `Request failed (${res.status})`);
-      }
-
-      if (!res.ok) {
-        const detail =
-          typeof payload === "object" &&
-          payload !== null &&
-          "detail" in payload
-            ? String((payload as { detail: unknown }).detail)
-            : raw;
-        throw new Error(detail || `Request failed (${res.status})`);
-      }
-
-      const data = payload as ContractAnalysisResult;
       const replyText = formatAnalysisMarkdown(data);
       const assistantMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -207,7 +169,7 @@ export default function ContractAnalysisPage() {
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
           Upload a contract (PDF or text). The assistant returns structured pain
-          points, red flags, and risks via OpenAI.
+          points, red flags, and risks via Agentic models.
         </p>
       </div>
 
@@ -255,11 +217,7 @@ export default function ContractAnalysisPage() {
           {messages.length === 0 ? (
             <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
               Upload a contract and optionally add instructions for what to
-              focus on. Analysis requires{" "}
-              <code className="rounded bg-zinc-100 px-1 dark:bg-zinc-800">
-                OPENAI_API_KEY
-              </code>{" "}
-              on the API server.
+              focus on.
             </p>
           ) : (
             <ul className="mx-auto flex max-w-3xl flex-col gap-4">

@@ -38,7 +38,7 @@ SPEED IS CRITICAL:
 - Work as quickly as possible
 """
 
-DEFAULT_RESEARCH_PROMPT = """Please research a current, interesting legal topic from today's legal news. 
+DEFAULT_RESEARCH_PROMPT = """Please research a current, interesting legal topic from today's financial news. 
 Pick something trending or significant happening in the legal sector right now.
 Follow all three steps: browse, analyze, and store your findings."""
 
@@ -47,7 +47,7 @@ def get_evaluator_instructions() -> str:
     return """You are a strict quality reviewer for legal research briefs.
 
 Your job: decide if the DRAFT fully and accurately addresses the USER_QUERY with appropriate
-specificity, sourcing awareness, and no major omissions or clear factual contradictions or halucinations.
+specificity, sourcing awareness, and no major omissions or clear factual contradictions.
 
 Output rules (must follow):
 - Reply with a single JSON object only. No markdown fences, no commentary before or after.

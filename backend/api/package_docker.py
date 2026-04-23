@@ -125,13 +125,13 @@ CMD ["api.main.handler"]
         run_command([
             "docker", "build",
             "--platform", "linux/amd64",
-            "-t", "alex-api-packager",
+            "-t", "legal-companion-api-packager",
             "."
         ], cwd=package_dir)
 
         # Create container and extract files
         print("Extracting Lambda package...")
-        container_name = "alex-api-extract"
+        container_name = "legal-companion-api-extract"
 
         # Remove container if it exists
         run_command(["docker", "rm", "-f", container_name], cwd=package_dir)
@@ -140,7 +140,7 @@ CMD ["api.main.handler"]
         run_command([
             "docker", "create",
             "--name", container_name,
-            "alex-api-packager"
+            "legal-companion-api-packager"
         ], cwd=package_dir)
 
         # Extract /var/task contents
