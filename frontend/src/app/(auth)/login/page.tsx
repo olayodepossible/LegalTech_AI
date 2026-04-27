@@ -1,7 +1,7 @@
 "use client";
 
 import { RedirectIfSignedIn } from "@/components/redirect-if-signed-in";
-import { Show, SignInButton, SignUpButton } from "@clerk/nextjs";
+import { Show, SignInButton, SignUpButton } from "@clerk/react";
 import Image from "next/image";
 import Link from "next/link";
 

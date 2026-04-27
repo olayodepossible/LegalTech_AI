@@ -8,7 +8,7 @@ from datetime import datetime, UTC
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from dotenv import load_dotenv
 from agents import Agent, Runner, trace
 
@@ -17,7 +17,16 @@ logger = logging.getLogger(__name__)
 logging.getLogger("LiteLLM").setLevel(logging.CRITICAL)
 
 # Import from our modules
-from context import get_agent_instructions, DEFAULT_RESEARCH_PROMPT
+from context import (
+    build_default_research_query,
+    build_research_user_query,
+    build_research_user_query_with_history,
+    companion_message_for_code,
+    get_agent_instructions,
+    research_footer_no_serper,
+    research_footer_serper,
+    should_give_companion_guidance,
+)
 from mcp_servers import create_playwright_mcp_server
 from research_evaluation import (
     evaluate_research_output,
@@ -30,13 +39,30 @@ from tools import ingest_legal_document
 # Load environment
 load_dotenv(override=True)
 
-app = FastAPI(title="FinPlex Researcher Service")
+app = FastAPI(title="Legal Companion Researcher Service")
 
 
-# Request model
+class ConversationTurn(BaseModel):
+    role: str
+    content: str
+
+    @field_validator("role")
+    @classmethod
+    def role_ok(cls, v: str) -> str:
+        if v not in ("user", "assistant"):
+            raise ValueError("role must be user or assistant")
+        return v
+
+
+# Request model # Optional - if not provided, agent picks a topic
 class ResearchRequest(BaseModel):
-    topic: Optional[str] = None  # Optional - if not provided, agent picks a topic
+    message: str = Field(..., min_length=1, max_length=12000)
+    language: str | None = "en"
+    """Earlier turns in the same thread (optional; improves follow-up answers)."""
+    conversation_history: list[ConversationTurn] | None = None
 
+class ResearchResponse(BaseModel):
+    reply: str
 
 async def _run_primary_research_agent(user_query: str) -> str:
     """First pass: Playwright MCP + optional ingest to legal API."""
@@ -54,7 +80,11 @@ async def _run_primary_research_agent(user_query: str) -> str:
     return (result.final_output or "").strip()
 
 
-async def run_research_agent(topic: str = None) -> str:
+async def run_research_agent(
+    user_message: str | None = None,
+    response_language: str = "en",
+    conversation_history: list[dict] | None = None,
+) -> str:
     """Run research: primary browse pass → evaluator → optional Serper (Google) refinement.
 
     1) Primary agent: Playwright-based browsing + ingest (existing behavior).
@@ -62,11 +92,24 @@ async def run_research_agent(topic: str = None) -> str:
     3) If refinement is needed and ``SERPER_API_KEY`` is set, a third agent uses the
        ``serper_google_search`` tool (Serper.dev) and produces an improved answer.
     If Serper is not configured, the draft is returned and a short note is appended.
+
+    ``response_language`` is the BCP-47 code from the chat UI; it is woven into the agent input
+    so the model must answer in that language (including for ``en``).
     """
-    if topic:
-        query = f"Research this legal topic: {topic}"
+    lang = (response_language or "en").strip() or "en"
+
+    if user_message and should_give_companion_guidance(user_message):
+        return companion_message_for_code(lang)
+
+    if user_message:
+        if conversation_history:
+            query = build_research_user_query_with_history(
+                user_message, lang, conversation_history
+            )
+        else:
+            query = build_research_user_query(user_message, lang)
     else:
-        query = DEFAULT_RESEARCH_PROMPT
+        query = build_default_research_query(lang)
 
     model = get_research_litellm_model()
     draft = await _run_primary_research_agent(query)
@@ -85,17 +128,9 @@ async def run_research_agent(topic: str = None) -> str:
         refined = None
 
     if refined:
-        return (
-            f"{refined}\n\n---\n*This response was extended after an automated quality review using "
-            "Google search (Serper). Not legal advice.*"
-        )
+        return f"{refined}{research_footer_serper(lang)}"
 
-    return (
-        f"{draft}\n\n---\n_Automated review suggested more targeted web research, but refinement "
-        "is unavailable. Set `SERPER_API_KEY` (https://serper.dev) for Google search via Serper, or "
-        "re-run with a more specific topic._"
-    )
-
+    return f"{draft}{research_footer_no_serper(lang)}"
 
 @app.get("/")
 async def root():
@@ -108,19 +143,25 @@ async def root():
 
 
 @app.post("/research")
-async def research(request: ResearchRequest) -> str:
+async def research(body: ResearchRequest) -> ResearchResponse:
     """
     Generate legal research and advice.
 
     The agent will:
-    1. Browse legal blogs and websites for data
+    1. Browse legal websites/blogs for data
     2. Analyze the information found
     3. Store the analysis in the knowledge base
 
     If no topic is provided, the agent will pick a trending topic.
     """
     try:
-        return await run_research_agent(request.topic)
+        hist = None
+        if body.conversation_history:
+            hist = [t.model_dump() for t in body.conversation_history]
+        response = await run_research_agent(
+            body.message, body.language, conversation_history=hist
+        )
+        return ResearchResponse(reply=response)
     except Exception as e:
         print(f"Error in research endpoint: {e}")
         import traceback
@@ -143,16 +184,13 @@ async def health():
     return {
         "service": "Legal Companion Researcher",
         "status": "healthy",
-        "legal_api_configured": bool(
-            os.getenv("LEGAL_API_ENDPOINT") and os.getenv("LEGAL_API_KEY")
-        ),
-        "serper_google_search_configured": bool(
-            (os.environ.get("SERPER_API_KEY") or "").strip()
-        ),
+        "legal_api_configured": bool(os.getenv("LEGAL_API_ENDPOINT") and os.getenv("LEGAL_API_KEY")),
+        "serper_api_configured": bool(os.getenv("SERPER_API_KEY")),
         "timestamp": datetime.now(UTC).isoformat(),
         "debug_container": container_indicators,
         "aws_region": os.environ.get("AWS_DEFAULT_REGION", "not set"),
     }
+
 
 if __name__ == "__main__":
     import uvicorn

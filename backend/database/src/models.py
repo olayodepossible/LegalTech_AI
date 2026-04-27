@@ -2,6 +2,7 @@
 Database models and query builders
 """
 
+import uuid
 from typing import Dict, List, Optional, Any
 from datetime import datetime, date
 from decimal import Decimal
@@ -186,6 +187,127 @@ class Jobs(BaseModel):
         return self.db.query(sql, params)
 
 
+class LegalChats(BaseModel):
+    """User-scoped legal Q&A chat sessions (Clerk id)."""
+
+    table_name = "legal_chats"
+
+    def find_for_user(self, clerk_user_id: str, chat_id: str) -> Optional[Dict]:
+        sql = f"""
+            SELECT * FROM {self.table_name}
+            WHERE id = :chat_id::uuid AND clerk_user_id = :clerk_id
+        """
+        params = [
+            {"name": "chat_id", "value": {"stringValue": str(chat_id)}},
+            {"name": "clerk_id", "value": {"stringValue": clerk_user_id}},
+        ]
+        return self.db.query_one(sql, params)
+
+    def owner_clerk_id(self, chat_id: str) -> Optional[str]:
+        """Return owner clerk_user_id for this chat id, or None if the row does not exist."""
+        sql = f"SELECT clerk_user_id FROM {self.table_name} WHERE id = :id::uuid"
+        params = [{"name": "id", "value": {"stringValue": str(chat_id)}}]
+        row = self.db.query_one(sql, params)
+        return str(row["clerk_user_id"]) if row and row.get("clerk_user_id") else None
+
+    def ensure_for_user(
+        self,
+        clerk_user_id: str,
+        chat_id: str,
+        title: str = "New chat",
+        language: str = "en",
+    ) -> None:
+        if self.find_for_user(clerk_user_id, chat_id):
+            return
+        self.db.insert(
+            self.table_name,
+            {
+                "id": str(chat_id),
+                "clerk_user_id": clerk_user_id,
+                "title": title,
+                "language": language,
+            },
+            returning="id",
+        )
+
+    def list_for_user(self, clerk_user_id: str, limit: int = 100) -> List[Dict]:
+        """Only sessions that have at least one message (hides empty client-created rows)."""
+        sql = f"""
+            SELECT c.id, c.title, c.language, c.created_at, c.updated_at
+            FROM {self.table_name} c
+            WHERE c.clerk_user_id = :clerk_id
+            AND EXISTS (
+                SELECT 1 FROM legal_chat_messages m WHERE m.chat_id = c.id
+            )
+            ORDER BY c.updated_at DESC
+            LIMIT :lim
+        """
+        params = [
+            {"name": "clerk_id", "value": {"stringValue": clerk_user_id}},
+            {"name": "lim", "value": {"longValue": int(limit)}},
+        ]
+        return self.db.query(sql, params)
+
+    def update_title(self, chat_id: str, title: str) -> int:
+        data = {
+            "title": title,
+            "updated_at": datetime.utcnow(),
+        }
+        return self.db.update(
+            self.table_name,
+            data,
+            "id = :id::uuid",
+            {"id": str(chat_id)},
+        )
+
+    def touch(self, chat_id: str) -> int:
+        data = {"updated_at": datetime.utcnow()}
+        return self.db.update(
+            self.table_name,
+            data,
+            "id = :id::uuid",
+            {"id": str(chat_id)},
+        )
+
+
+class LegalChatMessages(BaseModel):
+    """Messages for legal Q&A chat sessions."""
+
+    table_name = "legal_chat_messages"
+
+    def list_for_chat(self, chat_id: str) -> List[Dict]:
+        sql = f"""
+            SELECT id, chat_id, role, content, language_code, created_at
+            FROM {self.table_name}
+            WHERE chat_id = :chat_id::uuid
+            ORDER BY created_at ASC
+        """
+        params = [{"name": "chat_id", "value": {"stringValue": str(chat_id)}}]
+        return self.db.query(sql, params)
+
+    def insert_message(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        language_code: str,
+        message_id: Optional[str] = None,
+    ) -> str:
+        mid = str(message_id) if message_id else str(uuid.uuid4())
+        self.db.insert(
+            self.table_name,
+            {
+                "id": mid,
+                "chat_id": str(chat_id),
+                "role": role,
+                "content": content,
+                "language_code": language_code,
+            },
+            returning="id",
+        )
+        return mid
+
+
 class Database:
     """Main database interface providing access to all models"""
     
@@ -198,6 +320,8 @@ class Database:
         self.users = Users(self.client)
         self.activity_history = ActivityHistory(self.client)
         self.jobs = Jobs(self.client)
+        self.legal_chats = LegalChats(self.client)
+        self.legal_chat_messages = LegalChatMessages(self.client)
     
     def execute_raw(self, sql: str, parameters: List[Dict] = None) -> Dict:
         """Execute raw SQL for complex queries"""

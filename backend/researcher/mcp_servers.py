@@ -1,5 +1,6 @@
 """
-MCP server configurations for the Alex Researcher
+MCP server configurations for the 
+Legal Companion Researcher agent
 """
 import glob
 import os

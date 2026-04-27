@@ -1,16 +1,15 @@
-import type { Activity, ActivityType, ChatMessage } from "@/types/app";
+import type { ChatMessage } from "@/types/app";
 
-const activitiesKey = (userId: string) =>
-  `legaltech_activities_v2_${userId}`;
-const chatKey = (userId: string) => `legaltech_chat_v2_${userId}`;
 const contractChatKey = (userId: string) =>
   `legaltech_chat_contract_v1_${userId}`;
 
-export type ChatScope = "general" | "contract";
+const draftKey = (userId: string, sessionId: string) =>
+  `legaltech_chat_draft_v1_${userId}_${sessionId}`;
 
-function messagesKey(userId: string, scope: ChatScope): string {
-  return scope === "contract" ? contractChatKey(userId) : chatKey(userId);
-}
+export type ChatDraftV1 = {
+  text: string;
+  language?: string;
+};
 
 function safeParse<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback;
@@ -21,52 +20,46 @@ function safeParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
-export function getActivities(userId: string): Activity[] {
-  if (typeof window === "undefined") return [];
-  return safeParse(localStorage.getItem(activitiesKey(userId)), []);
-}
-
-function writeActivities(userId: string, list: Activity[]): void {
-  localStorage.setItem(activitiesKey(userId), JSON.stringify(list));
-}
-
-export function logActivity(
+/** Unsent composer text only. Activity history is stored in Aurora via POST /api/activity. */
+export function getChatDraft(
   userId: string,
-  type: ActivityType,
-  label: string,
-  detail?: string,
-): Activity {
-  const list = getActivities(userId);
-  const entry: Activity = {
-    id: crypto.randomUUID(),
-    type,
-    label,
-    detail,
-    at: new Date().toISOString(),
-  };
-  writeActivities(userId, [entry, ...list].slice(0, 200));
-  return entry;
+  sessionId: string,
+): ChatDraftV1 | null {
+  if (typeof window === "undefined") return null;
+  return safeParse<ChatDraftV1 | null>(localStorage.getItem(draftKey(userId, sessionId)), null);
 }
 
-export function getChatMessages(
+export function setChatDraft(
   userId: string,
-  scope: ChatScope = "general",
-): ChatMessage[] {
+  sessionId: string,
+  draft: ChatDraftV1,
+): void {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(draftKey(userId, sessionId), JSON.stringify(draft));
+}
+
+export function clearChatDraft(userId: string, sessionId: string): void {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(draftKey(userId, sessionId));
+}
+
+/** Contract analysis thread (local only; not POST /api/chat). */
+export function getChatMessages(userId: string, scope: "contract"): ChatMessage[] {
   if (typeof window === "undefined") return [];
-  return safeParse(localStorage.getItem(messagesKey(userId, scope)), []);
+  return safeParse(localStorage.getItem(contractChatKey(userId)), []);
 }
 
 export function appendChatMessage(
   userId: string,
   message: ChatMessage,
-  scope: ChatScope = "general",
+  options: { scope: "contract" },
 ): ChatMessage[] {
-  const list = getChatMessages(userId, scope);
+  const list = getChatMessages(userId, "contract");
   const next = [...list, message];
-  localStorage.setItem(messagesKey(userId, scope), JSON.stringify(next));
+  localStorage.setItem(contractChatKey(userId), JSON.stringify(next));
   return next;
 }
 
-export function clearChat(userId: string, scope: ChatScope = "general"): void {
-  localStorage.removeItem(messagesKey(userId, scope));
+export function clearChat(userId: string, scope: "contract" = "contract"): void {
+  localStorage.removeItem(contractChatKey(userId));
 }

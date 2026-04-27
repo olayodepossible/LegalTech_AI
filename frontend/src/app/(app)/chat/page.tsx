@@ -1,15 +1,23 @@
 "use client";
 
-import { postLegalChat } from "@/lib/api";
+import { ChatMarkdown } from "@/components/chat-markdown";
+import {
+  createLegalChat,
+  getLegalChatMessages,
+  logActivityRemote,
+  postLegalChat,
+  type LegalChatMessageRow,
+} from "@/lib/api";
 import { RESPONSE_LANGUAGES, languageLabel } from "@/lib/languages";
 import {
-  appendChatMessage,
-  getChatMessages,
-  logActivity,
+  clearChatDraft,
+  getChatDraft,
+  setChatDraft,
 } from "@/lib/local-store";
 import type { ChatMessage } from "@/types/app";
-import { useAuth, useUser } from "@clerk/nextjs";
-import { useEffect, useRef, useState } from "react";
+import { useAuth, useUser } from "@clerk/react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useRef, useState } from "react";
 
 function formatTime(iso: string) {
   try {
@@ -22,7 +30,24 @@ function formatTime(iso: string) {
   }
 }
 
-export default function ChatPage() {
+function mapServerMessage(m: LegalChatMessageRow): ChatMessage {
+  return {
+    id: m.id,
+    role: m.role === "assistant" ? "assistant" : "user",
+    content: m.content,
+    languageCode: m.language_code,
+    at: m.created_at || new Date().toISOString(),
+  };
+}
+
+/**
+ * With ``output: 'export'`` there is no ``/chat/[id]`` dynamic route; the session
+ * id lives in the ``session`` query so the app builds as a single static page.
+ */
+function ChatSessionInner() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const session = searchParams.get("session");
   const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
   const userId = user?.id;
@@ -30,66 +55,101 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [language, setLanguage] = useState("en");
   const [sending, setSending] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const draftSync = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    if (!userId) return;
-    logActivity(userId, "visit_chat", "Opened chat");
-    setMessages(getChatMessages(userId));
-  }, [userId]);
+    if (!isLoaded || !userId) return;
+    if (session) return;
+    router.replace(`/chat?session=${crypto.randomUUID()}`);
+  }, [isLoaded, userId, session, router]);
+
+  useEffect(() => {
+    if (!userId || !session) return;
+    const d = getChatDraft(userId, session);
+    if (d?.text) setInput(d.text);
+    if (d?.language) setLanguage(d.language);
+  }, [userId, session]);
+
+  useEffect(() => {
+    if (!userId || !session) return;
+    if (draftSync.current) clearTimeout(draftSync.current);
+    draftSync.current = setTimeout(() => {
+      if (input.trim() || (language && language !== "en")) {
+        setChatDraft(userId, session, { text: input, language });
+      } else {
+        clearChatDraft(userId, session);
+      }
+    }, 400);
+    return () => {
+      if (draftSync.current) clearTimeout(draftSync.current);
+    };
+  }, [userId, session, input, language]);
+
+  useEffect(() => {
+    if (!userId || !session) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setLoadError(null);
+      try {
+        await createLegalChat(getToken, session);
+        const rows = await getLegalChatMessages(session, getToken);
+        if (!cancelled) setMessages(rows.map(mapServerMessage));
+        logActivityRemote(getToken, "visit_chat", "Opened chat");
+      } catch (e) {
+        if (!cancelled) {
+          setLoadError(
+            e instanceof Error ? e.message : "Could not load conversation.",
+          );
+          setMessages([]);
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId, session, getToken]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
   async function handleSend() {
-    if (!userId || !input.trim() || sending) return;
+    if (!userId || !session || !input.trim() || sending) return;
 
     setSending(true);
+    setLoadError(null);
 
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: input.trim(),
-      languageCode: language,
-      at: new Date().toISOString(),
-    };
-
-    let stored = appendChatMessage(userId, userMsg);
-    setMessages(stored);
-    logActivity(
-      userId,
-      "chat_message",
-      "Sent chat message",
-      languageLabel(language),
-    );
-
-    const text = userMsg.content;
+    const userMsgText = input.trim();
     setInput("");
 
     try {
-      const { reply } = await postLegalChat(text, language, getToken);
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: reply,
-        languageCode: language,
-        at: new Date().toISOString(),
-      };
-      stored = appendChatMessage(userId, assistantMsg);
-      setMessages(stored);
+      await postLegalChat(userMsgText, language, session, getToken);
+      const rows = await getLegalChatMessages(session, getToken);
+      setMessages(rows.map(mapServerMessage));
+      clearChatDraft(userId, session);
+      logActivityRemote(
+        getToken,
+        "chat_message",
+        "Sent chat message",
+        languageLabel(language),
+      );
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new Event("legaltech-chats-updated"));
+      }
     } catch (e) {
       const msg =
         e instanceof Error ? e.message : "Could not get a response from the API.";
-      const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: `**Error:** ${msg}`,
-        languageCode: language,
-        at: new Date().toISOString(),
-      };
-      stored = appendChatMessage(userId, assistantMsg);
-      setMessages(stored);
+      setInput(userMsgText);
+      setLoadError(msg);
     } finally {
       setSending(false);
     }
@@ -109,10 +169,16 @@ export default function ChatPage() {
           Legal Companion
         </h1>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Answers come from the Legal Companion API (POST /api/chat). Use
-          Contract analysis in the sidebar to upload documents.
+          Conversations are stored in your account on the server. This device
+          only keeps an optional unsent message draft in the browser.
         </p>
       </div>
+
+      {loadError ? (
+        <p className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-900 dark:border-rose-900/40 dark:bg-rose-950/40 dark:text-rose-100">
+          {loadError}
+        </p>
+      ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200 bg-white shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
         <div className="flex flex-wrap items-center gap-3 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800">
@@ -135,11 +201,14 @@ export default function ChatPage() {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          {messages.length === 0 ? (
+          {loading ? (
             <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
-              Start by typing a legal question. The backend must expose POST
-              /api/chat with OPENAI_API_KEY. For document uploads, open
-              Contract analysis.
+              Loading conversation…
+            </p>
+          ) : messages.length === 0 ? (
+            <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
+              Start by typing a legal question. For document uploads, open
+              Contract analysis in the sidebar.
             </p>
           ) : (
             <ul className="mx-auto flex max-w-3xl flex-col gap-4">
@@ -176,7 +245,11 @@ export default function ChatPage() {
                         ))}
                       </ul>
                     ) : null}
-                    <p className="whitespace-pre-wrap">{m.content}</p>
+                    {m.role === "assistant" ? (
+                      <ChatMarkdown content={m.content} />
+                    ) : (
+                      <p className="whitespace-pre-wrap">{m.content}</p>
+                    )}
                   </div>
                 </li>
               ))}
@@ -205,7 +278,7 @@ export default function ChatPage() {
             />
             <button
               type="submit"
-              disabled={sending || !input.trim()}
+              disabled={sending || !input.trim() || !session}
               className="shrink-0 self-end rounded-xl bg-indigo-600 px-5 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {sending ? "…" : "Send"}
@@ -214,5 +287,19 @@ export default function ChatPage() {
         </form>
       </div>
     </div>
+  );
+}
+
+export default function ChatPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-[40vh] items-center justify-center text-sm text-zinc-500 dark:text-zinc-400">
+          Loading chat…
+        </div>
+      }
+    >
+      <ChatSessionInner />
+    </Suspense>
   );
 }

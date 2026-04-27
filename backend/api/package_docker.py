@@ -74,13 +74,16 @@ def main():
             print(f"Warning: Database package not found at {database_src}")
 
         # Contract analysis library (imported by api.main only — not a separate HTTP service)
-        ca_src = backend_dir / "contract_analyst" / "contract_analyst"
+        # Package lives at ``backend/contract_analyst/`` (``contract_analyst`` module root), not nested.
+        ca_src = backend_dir / "contract_analyst"
         ca_dst = package_dir / "contract_analyst"
-        if ca_src.exists():
+        if (ca_src / "__init__.py").exists():
             shutil.copytree(
                 ca_src,
                 ca_dst,
-                ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+                ignore=shutil.ignore_patterns(
+                    "__pycache__", "*.pyc", ".env*", "uv.lock", "README.md", "pyproject.toml"
+                ),
             )
             print(f"Copied contract_analyst package from {ca_src}")
         else:
@@ -100,6 +103,9 @@ def main():
             f.write("python-multipart>=0.0.9\n")
             f.write("openai>=1.59.0\n")
             f.write("pypdf>=5.1.0\n")
+            f.write("httpx>=0.28.0\n")
+            f.write("requests>=2.32.0\n")
+            f.write("tenacity>=9.1.0\n")
 
         # Create Dockerfile
         dockerfile_content = """
@@ -176,7 +182,7 @@ CMD ["api.main.handler"]
 
         # Get file size
         size_mb = zip_path.stat().st_size / (1024 * 1024)
-        print(f"✅ Lambda package created: {zip_path} ({size_mb:.2f} MB)")
+        print(f"OK: Lambda package created: {zip_path} ({size_mb:.2f} MB)")
 
         # Verify the package
         print("\nPackage contents (first 20 files):")

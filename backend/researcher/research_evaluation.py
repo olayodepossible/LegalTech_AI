@@ -56,9 +56,22 @@ def _parse_eval_json(text: str) -> ResearchEvaluation:
     return ResearchEvaluation.model_validate_json(raw)
 
 
+# Short model id (e.g. gpt-4.1-mini) — must match an OpenRouter-routable name for openai/ provider.
+# OpenRouter: https://openrouter.ai/models
+_DEFAULT_OPENAI_CHAT_MODEL = "gpt-4.1-mini"
+
+
+def _openai_chat_model_id() -> str:
+    m = (os.getenv("OPENAI_CHAT_MODEL") or _DEFAULT_OPENAI_CHAT_MODEL).strip()
+    if not m:
+        return _DEFAULT_OPENAI_CHAT_MODEL
+    return m
+
+
 def get_research_litellm_model() -> LitellmModel:
     return LitellmModel(
-        f"openrouter/openai/{os.getenv('OPENAI_CHAT_MODEL')}", api_key=os.getenv("OPENROUTER_API_KEY")
+        f"openrouter/openai/{_openai_chat_model_id()}",
+        api_key=os.getenv("OPENROUTER_API_KEY"),
     )
 
 

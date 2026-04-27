@@ -18,31 +18,11 @@ variable "vector_bucket" {
   type        = string
 }
 
-variable "bedrock_model_id" {
-  description = "Bedrock model ID to use for agents"
-  type        = string
-}
-
-variable "bedrock_region" {
-  description = "AWS region for Bedrock"
-  type        = string
-}
 
 variable "sagemaker_endpoint" {
   description = "SageMaker endpoint name from Part 2"
   type        = string
-  default     = "finplex-embedding-endpoint"
-}
-
-variable "polygon_api_key" {
-  description = "Polygon.io API key for market data"
-  type        = string
-}
-
-variable "polygon_plan" {
-  description = "Polygon.io plan type (free or paid)"
-  type        = string
-  default     = "free"
+  default     = "legal-companion-embedding-endpoint"
 }
 
 # LangFuse observability variables (optional)

@@ -36,11 +36,11 @@ resource "random_password" "db_password" {
 
 # Secrets Manager secret for database credentials
 resource "aws_secretsmanager_secret" "db_credentials" {
-  name                    = "finplex-aurora-credentials-${random_id.suffix.hex}"
+  name                    = "legal-companion-aurora-credentials-${random_id.suffix.hex}"
   recovery_window_in_days = 0  # For development - immediate deletion
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
@@ -52,7 +52,8 @@ resource "random_id" "suffix" {
 resource "aws_secretsmanager_secret_version" "db_credentials" {
   secret_id = aws_secretsmanager_secret.db_credentials.id
   secret_string = jsonencode({
-    username = "finplexadmin"
+    # Must match aws_rds_cluster.aurora master_username (Data API uses this secret to connect)
+    username = "legalcompanionadmin"
     password = random_password.db_password.result
   })
 }
@@ -70,19 +71,19 @@ data "aws_subnets" "default" {
 }
 
 resource "aws_db_subnet_group" "aurora" {
-  name       = "finplex-aurora-subnet-group"
+  name       = "legal-companion-aurora-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
 
 # Security group for Aurora
 resource "aws_security_group" "aurora" {
-  name        = "finplex-aurora-sg"
-  description = "Security group for FinPlex Aurora cluster"
+  name        = "legal-companion-aurora-sg"
+  description = "Security group for legal-companion Aurora cluster"
   vpc_id      = data.aws_vpc.default.id
   
   # Allow PostgreSQL access from within VPC
@@ -101,19 +102,19 @@ resource "aws_security_group" "aurora" {
   }
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
 
 # Aurora Serverless v2 Cluster
 resource "aws_rds_cluster" "aurora" {
-  cluster_identifier     = "finplex-aurora-cluster"
+  cluster_identifier     = "legal-companion-aurora-cluster"
   engine                 = "aurora-postgresql"
   engine_mode            = "provisioned"
   engine_version         = "15.12"
-  database_name          = "finplex"
-  master_username        = "finplexadmin"
+  database_name          = "legalcompanion"
+  master_username        = "legalcompanionadmin"
   master_password        = random_password.db_password.result
   
   # Serverless v2 scaling configuration
@@ -139,14 +140,14 @@ resource "aws_rds_cluster" "aurora" {
   apply_immediately   = true
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
 
 # Aurora Serverless v2 Instance
 resource "aws_rds_cluster_instance" "aurora" {
-  identifier          = "finplex-aurora-instance-1"
+  identifier          = "legal-companion-aurora-instance-1"
   cluster_identifier  = aws_rds_cluster.aurora.id
   instance_class      = "db.serverless"
   engine              = aws_rds_cluster.aurora.engine
@@ -155,14 +156,14 @@ resource "aws_rds_cluster_instance" "aurora" {
   performance_insights_enabled = false  # Save costs in development
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
 
 # IAM role for Lambda to access Aurora Data API
 resource "aws_iam_role" "lambda_aurora_role" {
-  name = "finplex-lambda-aurora-role"
+  name = "legal-companion-lambda-aurora-role"
   
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -178,14 +179,14 @@ resource "aws_iam_role" "lambda_aurora_role" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "5"
   }
 }
 
 # IAM policy for Data API access
 resource "aws_iam_role_policy" "lambda_aurora_policy" {
-  name = "finplex-lambda-aurora-policy"
+  name = "legal-companion-lambda-aurora-policy"
   role = aws_iam_role.lambda_aurora_role.id
   
   policy = jsonencode({

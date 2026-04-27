@@ -22,7 +22,6 @@ dependencies = [
 members = [
     "database",
     "api",
-    "scheduler",
     "contract_analyst",
     "ingestion_worker",
 ]

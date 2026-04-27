@@ -47,14 +47,15 @@ def main():
         print("Error: DEFAULT_AWS_REGION not found in your .env file.")
         sys.exit(1)
 
-    ecr_repository = "legal-researcher"
+    ecr_repository = "legal-companion-researcher"
+    service_name = "legal-companion-researcher"
 
     print(f"AWS Account: {account_id}")
     print(f"Region: {region}")
 
     # Get ECR repository URL from Terraform
     print("\nGetting ECR repository URL...")
-    terraform_dir = Path(__file__).parent.parent.parent / "terraform" / "researcher"
+    terraform_dir = Path(__file__).parent.parent.parent / "terraform" / "4_researcher"
     original_dir = os.getcwd()
 
     try:
@@ -95,21 +96,31 @@ def main():
     timestamp = int(time.time())
     image_tag = f"deploy-{timestamp}"
 
+    # Always build from this package directory (Dockerfile, pyproject, server.py).
+    # Using "." without chdir would use the caller's cwd and can upload the wrong or empty context.
+    researcher_dir = Path(__file__).resolve().parent
+    build_cwd = os.getcwd()
+
     # Build Docker image
     print(f"\nBuilding Docker image for linux/amd64 with tag: {image_tag}")
+    print(f"Docker build context: {researcher_dir}")
     print("(This ensures compatibility with AWS App Runner)")
-    run_command(
-        [
-            "docker",
-            "build",
-            "--platform",
-            "linux/amd64",
-            "-t",
-            f"{ecr_repository}:{image_tag}",
-            # Removed --no-cache to use Docker layer caching for faster builds
-            ".",
-        ]
-    )
+    try:
+        os.chdir(researcher_dir)
+        run_command(
+            [
+                "docker",
+                "build",
+                "--platform",
+                "linux/amd64",
+                "-t",
+                f"{ecr_repository}:{image_tag}",
+                # Removed --no-cache to use Docker layer caching for faster builds
+                ".",
+            ]
+        )
+    finally:
+        os.chdir(build_cwd)
 
     # Tag for ECR with both unique tag and latest
     print("\nTagging image for ECR...")
@@ -137,7 +148,7 @@ def main():
                 "--region",
                 region,
                 "--query",
-                "ServiceSummaryList[?ServiceName=='legal-researcher'].ServiceArn",
+                f"ServiceSummaryList[?ServiceName=='{service_name}'].ServiceArn",
                 "--output",
                 "json",
             ],
@@ -188,7 +199,11 @@ def main():
                                     "ImageConfiguration": {
                                         "Port": "8000",
                                         "RuntimeEnvironmentVariables": {
+                                            "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", ""),
                                             "OPENROUTER_API_KEY": os.environ.get("OPENROUTER_API_KEY", ""),
+                                            "OPENAI_CHAT_MODEL": os.environ.get(
+                                                "OPENAI_CHAT_MODEL", "gpt-4.1-mini"
+                                            ),
                                             "LEGAL_API_KEY": os.environ.get("LEGAL_API_KEY", ""),
                                             "LEGAL_API_ENDPOINT": os.environ.get(
                                                 "LEGAL_API_ENDPOINT", ""
@@ -311,13 +326,13 @@ def main():
                 )
                 print("\nTo manually deploy:")
                 print("  1. Go to AWS Console > App Runner")
-                print("  2. Select 'finplex-researcher' service")
+                print("  2. Select 'legal-companion-researcher' service")
                 print("  3. Click 'Deploy' to pull the latest image")
     except Exception as e:
         print(f"\nCouldn't automatically start deployment: {e}")
         print("\nTo manually deploy:")
         print("  1. Go to AWS Console > App Runner")
-        print("  2. Select 'finplex-researcher' service")
+        print("  2. Select 'legal-companion-researcher' service")
         print("  3. Click 'Deploy' to pull the latest image")
 
 

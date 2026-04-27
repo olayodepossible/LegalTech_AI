@@ -3,16 +3,17 @@
 import {
   getActivityHistory,
   getOrCreateUser,
+  logActivityRemote,
   type ActivityHistoryRow,
 } from "@/lib/api";
 import { journeyProgress } from "@/lib/journey";
-import { getActivities, logActivity } from "@/lib/local-store";
-import type { Activity } from "@/types/app";
-import { useAuth, useUser } from "@clerk/nextjs";
+import type { Activity, ActivityType } from "@/types/app";
+import { useAuth, useUser } from "@clerk/react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
 const ACTIVITY_PAGE_SIZE = 5;
+const SESSION_LOGIN_KEY = "legaltech_db_login_logged_v1";
 
 type HistoryListItem = {
   id: string;
@@ -26,6 +27,18 @@ function mapApiRow(r: ActivityHistoryRow, i: number): HistoryListItem {
     id: String(r.id ?? `api-${i}`),
     label: (r.label ?? r.account_name ?? "Activity") as string,
     detail: (r.details ?? r.activity_type ?? undefined) as string | undefined,
+    at: (r.created_at ?? r.activity_date ?? new Date().toISOString()) as string,
+  };
+}
+
+function rowToJourneyActivity(r: ActivityHistoryRow, i: number): Activity {
+  const raw = (r.activity_type || "visit_dashboard").trim();
+  const type = raw as ActivityType;
+  return {
+    id: String(r.id ?? `j-${i}`),
+    type,
+    label: (r.label ?? r.account_name ?? "Activity") as string,
+    detail: (r.details ?? undefined) as string | undefined,
     at: (r.created_at ?? r.activity_date ?? new Date().toISOString()) as string,
   };
 }
@@ -44,7 +57,6 @@ function formatTime(iso: string) {
 export default function DashboardPage() {
   const { user, isLoaded } = useUser();
   const { getToken } = useAuth();
-  const [activities, setActivities] = useState<Activity[]>([]);
   const [activityPage, setActivityPage] = useState(1);
   const [apiUser, setApiUser] = useState<Record<string, unknown> | null>(null);
   const [apiHistory, setApiHistory] = useState<
@@ -53,14 +65,14 @@ export default function DashboardPage() {
 
   useEffect(() => {
     if (!isLoaded || !user?.id) return;
-    const acts = getActivities(user.id);
-    if (!acts.some((a) => a.type === "login")) {
-      logActivity(user.id, "signup", "Account ready");
-      logActivity(user.id, "login", "Signed in with Clerk");
-    }
-    logActivity(user.id, "visit_dashboard", "Opened dashboard");
-    setActivities(getActivities(user.id));
-  }, [isLoaded, user?.id]);
+    (async () => {
+      if (typeof sessionStorage !== "undefined" && !sessionStorage.getItem(SESSION_LOGIN_KEY)) {
+        sessionStorage.setItem(SESSION_LOGIN_KEY, "1");
+        logActivityRemote(getToken, "login", "Signed in with Clerk");
+      }
+      logActivityRemote(getToken, "visit_dashboard", "Opened dashboard");
+    })();
+  }, [isLoaded, user?.id, getToken]);
 
   useEffect(() => {
     if (!isLoaded || !user?.id) return;
@@ -86,15 +98,15 @@ export default function DashboardPage() {
 
   const historyRows: HistoryListItem[] = useMemo(() => {
     if (apiHistory === "pending" || apiHistory === "unavailable") {
-      return activities.map((a) => ({
-        id: a.id,
-        label: a.label,
-        detail: a.detail,
-        at: a.at,
-      }));
+      return [];
     }
     return apiHistory.map(mapApiRow);
-  }, [apiHistory, activities]);
+  }, [apiHistory]);
+
+  const journeyActivities: Activity[] = useMemo(() => {
+    if (!Array.isArray(apiHistory)) return [];
+    return apiHistory.map(rowToJourneyActivity);
+  }, [apiHistory]);
 
   const activityTotalPages = Math.max(
     1,
@@ -120,8 +132,8 @@ export default function DashboardPage() {
   );
 
   const progress = useMemo(
-    () => journeyProgress(activities),
-    [activities],
+    () => journeyProgress(journeyActivities),
+    [journeyActivities],
   );
 
   const email =
@@ -225,15 +237,23 @@ export default function DashboardPage() {
           Activity history
         </h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          {Array.isArray(apiHistory)
-            ? "Synced from your account."
-            : "Recent actions in your browser; server history when the API is available."}
+          {apiHistory === "unavailable"
+            ? "Could not load activity from the server. Check the API and database."
+            : apiHistory === "pending"
+              ? "Loading from your account…"
+              : "Stored in your account for analytics and future subscription features."}
         </p>
-        {historyRows.length === 0 ? (
+        {apiHistory === "pending" && historyRows.length === 0 ? (
+          <p className="mt-8 text-sm text-zinc-500 dark:text-zinc-400">
+            Loading…
+          </p>
+        ) : null}
+        {historyRows.length === 0 && apiHistory !== "pending" ? (
           <p className="mt-8 text-sm text-zinc-500 dark:text-zinc-400">
             No activity yet. Explore the chat or upload a document.
           </p>
-        ) : (
+        ) : null}
+        {historyRows.length > 0 ? (
           <>
             <ul className="mt-6 divide-y divide-zinc-100 dark:divide-zinc-800">
               {pagedActivities.map((a) => (
@@ -293,7 +313,7 @@ export default function DashboardPage() {
               ) : null}
             </div>
           </>
-        )}
+        ) : null}
       </section>
     </div>
   );

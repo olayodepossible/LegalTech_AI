@@ -24,7 +24,7 @@ data "aws_caller_identity" "current" {}
 # ========================================
 
 resource "aws_sqs_queue" "analysis_jobs" {
-  name                       = "finplex-analysis-jobs"
+  name                       = "legal-companion-analysis-jobs"
   delay_seconds             = 0
   max_message_size          = 262144
   message_retention_seconds = 86400  # 1 day
@@ -37,16 +37,16 @@ resource "aws_sqs_queue" "analysis_jobs" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "6"
   }
 }
 
 resource "aws_sqs_queue" "analysis_jobs_dlq" {
-  name = "finplex-analysis-jobs-dlq"
+  name = "legal-companion-analysis-jobs-dlq"
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "6"
   }
 }
@@ -56,7 +56,7 @@ resource "aws_sqs_queue" "analysis_jobs_dlq" {
 # ========================================
 
 resource "aws_iam_role" "lambda_agents_role" {
-  name = "finplex-lambda-agents-role"
+  name = "legal-companion-lambda-agents-role"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -72,14 +72,14 @@ resource "aws_iam_role" "lambda_agents_role" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "6"
   }
 }
 
 # IAM policy for Lambda agents
 resource "aws_iam_role_policy" "lambda_agents_policy" {
-  name = "finplex-lambda-agents-policy"
+  name = "legal-companion-lambda-agents-policy"
   role = aws_iam_role.lambda_agents_role.id
   
   policy = jsonencode({
@@ -111,7 +111,7 @@ resource "aws_iam_role_policy" "lambda_agents_policy" {
         Action = [
           "lambda:InvokeFunction"
         ]
-        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:finplex-*"
+        Resource = "arn:aws:lambda:${var.aws_region}:${data.aws_caller_identity.current.account_id}:function:legal-companion-*"
       },
       # Aurora Data API access
       {
@@ -191,261 +191,10 @@ resource "aws_iam_role_policy_attachment" "lambda_agents_basic" {
 
 # S3 bucket for Lambda packages (packages > 50MB must use S3)
 resource "aws_s3_bucket" "lambda_packages" {
-  bucket = "finplex-lambda-packages-${data.aws_caller_identity.current.account_id}"
+  bucket = "legal-companion-lambda-packages-${data.aws_caller_identity.current.account_id}"
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "6"
-  }
-}
-
-# Upload Lambda packages to S3
-resource "aws_s3_object" "lambda_packages" {
-  for_each = toset(["planner", "tagger", "reporter", "charter", "retirement"])
-  
-  bucket = aws_s3_bucket.lambda_packages.id
-  key    = "${each.key}/${each.key}_lambda.zip"
-  source = "${path.module}/../../backend/${each.key}/${each.key}_lambda.zip"
-  etag   = fileexists("${path.module}/../../backend/${each.key}/${each.key}_lambda.zip") ? filemd5("${path.module}/../../backend/${each.key}/${each.key}_lambda.zip") : null
-  
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = each.key
-  }
-}
-
-# ========================================
-# Lambda Functions for Each Agent
-# ========================================
-
-# Planner (Orchestrator) Lambda
-resource "aws_lambda_function" "planner" {
-  function_name = "finplex-planner"
-  role          = aws_iam_role.lambda_agents_role.arn
-  
-  # Using S3 for deployment package (>50MB)
-  s3_bucket        = aws_s3_bucket.lambda_packages.id
-  s3_key           = aws_s3_object.lambda_packages["planner"].key
-  source_code_hash = fileexists("${path.module}/../../backend/planner/planner_lambda.zip") ? filebase64sha256("${path.module}/../../backend/planner/planner_lambda.zip") : null
-  
-  handler     = "lambda_handler.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 900  # 15 minutes for planner
-  memory_size = 2048  # 2GB for planner
-  
-  environment {
-    variables = {
-      AURORA_CLUSTER_ARN = var.aurora_cluster_arn
-      AURORA_SECRET_ARN  = var.aurora_secret_arn
-      DATABASE_NAME      = "finplex"
-      VECTOR_BUCKET      = var.vector_bucket
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
-      BEDROCK_REGION     = var.bedrock_region
-      DEFAULT_AWS_REGION = var.aws_region
-      SAGEMAKER_ENDPOINT = var.sagemaker_endpoint
-      POLYGON_API_KEY    = var.polygon_api_key
-      POLYGON_PLAN       = var.polygon_plan
-      # LangFuse observability (optional)
-      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
-      OPENROUTER_API_KEY  = var.openrouter_api_key
-    }
-  }
-
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = "orchestrator"
-  }
-  
-  depends_on = [aws_s3_object.lambda_packages["planner"]]
-}
-
-# SQS trigger for Planner
-resource "aws_lambda_event_source_mapping" "planner_sqs" {
-  event_source_arn = aws_sqs_queue.analysis_jobs.arn
-  function_name    = aws_lambda_function.planner.arn
-  batch_size       = 1
-}
-
-# Tagger Lambda
-resource "aws_lambda_function" "tagger" {
-  function_name = "finplex-tagger"
-  role          = aws_iam_role.lambda_agents_role.arn
-
-  # Using S3 for deployment package (>50MB)
-  s3_bucket        = aws_s3_bucket.lambda_packages.id
-  s3_key           = aws_s3_object.lambda_packages["tagger"].key
-  source_code_hash = fileexists("${path.module}/../../backend/tagger/tagger_lambda.zip") ? filebase64sha256("${path.module}/../../backend/tagger/tagger_lambda.zip") : null
-
-  handler     = "lambda_handler.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 300  # 5 minutes for tagger
-  memory_size = 1024
-
-  environment {
-    variables = {
-      AURORA_CLUSTER_ARN = var.aurora_cluster_arn
-      AURORA_SECRET_ARN  = var.aurora_secret_arn
-      DATABASE_NAME      = "finplex"
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
-      BEDROCK_REGION     = var.bedrock_region
-      DEFAULT_AWS_REGION = var.aws_region
-      # LangFuse observability (optional)
-      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
-      OPENROUTER_API_KEY  = var.openrouter_api_key
-    }
-  }
-  
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = "tagger"
-  }
-  
-  depends_on = [aws_s3_object.lambda_packages["tagger"]]
-}
-
-# Reporter Lambda
-resource "aws_lambda_function" "reporter" {
-  function_name = "finplex-reporter"
-  role          = aws_iam_role.lambda_agents_role.arn
-  
-  # Using S3 for deployment package (>50MB)
-  s3_bucket        = aws_s3_bucket.lambda_packages.id
-  s3_key           = aws_s3_object.lambda_packages["reporter"].key
-  source_code_hash = fileexists("${path.module}/../../backend/reporter/reporter_lambda.zip") ? filebase64sha256("${path.module}/../../backend/reporter/reporter_lambda.zip") : null
-  
-  handler     = "lambda_handler.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 300  # 5 minutes for reporter agent
-  memory_size = 1024
-  
-  environment {
-    variables = {
-      AURORA_CLUSTER_ARN = var.aurora_cluster_arn
-      AURORA_SECRET_ARN  = var.aurora_secret_arn
-      DATABASE_NAME      = "finplex"
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
-      BEDROCK_REGION     = var.bedrock_region
-      DEFAULT_AWS_REGION = var.aws_region
-      SAGEMAKER_ENDPOINT = var.sagemaker_endpoint
-      # LangFuse observability (optional)
-      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
-      OPENROUTER_API_KEY  = var.openrouter_api_key
-    }
-  }
-
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = "reporter"
-  }
-  
-  depends_on = [aws_s3_object.lambda_packages["reporter"]]
-}
-
-# Charter Lambda
-resource "aws_lambda_function" "charter" {
-  function_name = "finplex-charter"
-  role          = aws_iam_role.lambda_agents_role.arn
-  
-  # Using S3 for deployment package (>50MB)
-  s3_bucket        = aws_s3_bucket.lambda_packages.id
-  s3_key           = aws_s3_object.lambda_packages["charter"].key
-  source_code_hash = fileexists("${path.module}/../../backend/charter/charter_lambda.zip") ? filebase64sha256("${path.module}/../../backend/charter/charter_lambda.zip") : null
-  
-  handler     = "lambda_handler.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 300  # 5 minutes for charter agent
-  memory_size = 1024
-  
-  environment {
-    variables = {
-      AURORA_CLUSTER_ARN = var.aurora_cluster_arn
-      AURORA_SECRET_ARN  = var.aurora_secret_arn
-      DATABASE_NAME      = "finplex"
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
-      BEDROCK_REGION     = var.bedrock_region
-      DEFAULT_AWS_REGION = var.aws_region
-      # LangFuse observability (optional)
-      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
-      OPENROUTER_API_KEY  = var.openrouter_api_key
-    }
-  }
-
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = "charter"
-  }
-  
-  depends_on = [aws_s3_object.lambda_packages["charter"]]
-}
-
-# Retirement Lambda
-resource "aws_lambda_function" "retirement" {
-  function_name = "finplex-retirement"
-  role          = aws_iam_role.lambda_agents_role.arn
-  
-  # Using S3 for deployment package (>50MB)
-  s3_bucket        = aws_s3_bucket.lambda_packages.id
-  s3_key           = aws_s3_object.lambda_packages["retirement"].key
-  source_code_hash = fileexists("${path.module}/../../backend/retirement/retirement_lambda.zip") ? filebase64sha256("${path.module}/../../backend/retirement/retirement_lambda.zip") : null
-  
-  handler     = "lambda_handler.lambda_handler"
-  runtime     = "python3.12"
-  timeout     = 300  # 5 minutes for retirement agent
-  memory_size = 1024
-  
-  environment {
-    variables = {
-      AURORA_CLUSTER_ARN = var.aurora_cluster_arn
-      AURORA_SECRET_ARN  = var.aurora_secret_arn
-      DATABASE_NAME      = "finplex"
-      BEDROCK_MODEL_ID   = var.bedrock_model_id
-      BEDROCK_REGION     = var.bedrock_region
-      DEFAULT_AWS_REGION = var.aws_region
-      # LangFuse observability (optional)
-      LANGFUSE_PUBLIC_KEY = var.langfuse_public_key
-      LANGFUSE_SECRET_KEY = var.langfuse_secret_key
-      LANGFUSE_HOST       = var.langfuse_host
-      OPENAI_API_KEY      = var.openai_api_key
-      OPENROUTER_API_KEY  = var.openrouter_api_key
-    }
-  }
-
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = "retirement"
-  }
-  
-  depends_on = [aws_s3_object.lambda_packages["retirement"]]
-}
-
-# CloudWatch Log Groups
-resource "aws_cloudwatch_log_group" "agent_logs" {
-  for_each = toset(["planner", "tagger", "reporter", "charter", "retirement"])
-  
-  name              = "/aws/lambda/finplex-${each.key}"
-  retention_in_days = 7
-  
-  tags = {
-    Project = "finplex"
-    Part    = "6"
-    Agent   = each.key
   }
 }

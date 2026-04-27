@@ -27,22 +27,42 @@ data "terraform_remote_state" "database" {
   }
 }
 
-# Reference Part 6 Agents resources
-data "terraform_remote_state" "agents" {
+# SQS queue from Part 6 (same name as aws_sqs_queue.analysis_jobs in terraform/6_agents).
+# We look it up in AWS so Part 7 does not depend on a local terraform/6_agents state file.
+data "aws_sqs_queue" "analysis_jobs" {
+  name = "legal-companion-analysis-jobs"
+}
+
+# Part 4 researcher (App Runner) — API Lambda proxies POST /api/chat to this host
+data "terraform_remote_state" "researcher" {
   backend = "local"
   config = {
-    path = "../6_agents/terraform.tfstate"
+    path = "../4_researcher/terraform.tfstate"
   }
 }
 
+
+
 locals {
-  name_prefix = "finplex"
+  name_prefix = "legal-companion"
 
   common_tags = {
-    Project     = "finplex"
+    Project     = "legal-companion"
     Part        = "7_frontend"
     ManagedBy   = "terraform"
   }
+
+  # Host only (no scheme) — see backend/api/main.py research_handler
+  app_runner_host = replace(
+    replace(data.terraform_remote_state.researcher.outputs.app_runner_service_url, "https://", ""),
+    "http://",
+    ""
+  )
+}
+
+# Part 3 S3 Vectors bucket (same as terraform/3_ingestion) — POST /api/rag/documents/upload
+data "aws_s3_bucket" "vectors" {
+  bucket = "${local.name_prefix}-vectors-${data.aws_caller_identity.current.account_id}"
 }
 
 # S3 bucket for frontend static website
@@ -160,7 +180,32 @@ resource "aws_iam_role_policy" "api_lambda_sqs" {
           "sqs:SendMessage",
           "sqs:GetQueueAttributes"
         ]
-        Resource = data.terraform_remote_state.agents.outputs.sqs_queue_arn
+        Resource = data.aws_sqs_queue.analysis_jobs.arn
+      }
+    ]
+  })
+}
+
+# RAG: upload user documents to the vectors bucket (ingestion / S3 Vectors)
+resource "aws_iam_role_policy" "api_lambda_s3_rag" {
+  name = "${local.name_prefix}-api-lambda-s3-rag"
+  role = aws_iam_role.api_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject"
+        ]
+        Resource = "${data.aws_s3_bucket.vectors.arn}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = data.aws_s3_bucket.vectors.arn
       }
     ]
   })
@@ -178,11 +223,11 @@ resource "aws_iam_role_policy" "api_lambda_invoke" {
         Effect = "Allow"
         Action = "lambda:InvokeFunction"
         Resource = [
-          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:finplex-planner",
-          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:finplex-tagger",
-          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:finplex-reporter",
-          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:finplex-charter",
-          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:finplex-retirement"
+          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:legal-companion-planner",
+          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:legal-companion-tagger",
+          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:legal-companion-reporter",
+          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:legal-companion-charter",
+          "arn:aws:lambda:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:function:legal-companion-retirement"
         ]
       }
     ]
@@ -210,15 +255,24 @@ resource "aws_lambda_function" "api" {
       AURORA_DATABASE    = data.terraform_remote_state.database.outputs.database_name
       DEFAULT_AWS_REGION = var.aws_region
 
-      # SQS configuration from Part 6
-      SQS_QUEUE_URL = data.terraform_remote_state.agents.outputs.sqs_queue_url
-
       # Clerk configuration for JWT validation
       CLERK_JWKS_URL = var.clerk_jwks_url
       CLERK_ISSUER   = var.clerk_issuer
 
       # CORS configuration
       CORS_ORIGINS = "http://localhost:3000,https://${aws_cloudfront_distribution.main.domain_name}"
+
+      # SQS (Part 6) — used by RAG/ingest paths in the API Lambda
+      SQS_QUEUE_URL = data.aws_sqs_queue.analysis_jobs.url
+
+      # OpenRouter (contract analysis, etc.) — see backend/contract_analyst/service.py
+      OPENROUTER_API_KEY = var.openrouter_api_key
+
+      # Researcher (Part 4 App Runner) — POST /api/chat
+      APP_RUNNER_URL = local.app_runner_host
+
+      # RAG uploads (Part 3 bucket) — see backend/api/main.py upload_rag_document
+      RAG_DOCUMENTS_BUCKET = data.aws_s3_bucket.vectors.id
     }
   }
 
@@ -226,6 +280,7 @@ resource "aws_lambda_function" "api" {
   depends_on = [
     aws_iam_role_policy.api_lambda_aurora,
     aws_iam_role_policy.api_lambda_sqs,
+    aws_iam_role_policy.api_lambda_s3_rag,
     aws_iam_role_policy.api_lambda_invoke,
     aws_cloudfront_distribution.main
   ]
@@ -297,7 +352,7 @@ resource "aws_cloudfront_distribution" "main" {
   is_ipv6_enabled     = true
   default_root_object = "index.html"
   tags                = local.common_tags
-  comment             = "FinPlex Financial Advisor Frontend"
+  comment             = "Legal companion  Advisor Frontend"
 
   # S3 origin for frontend
   origin {

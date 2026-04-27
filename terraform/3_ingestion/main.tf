@@ -24,10 +24,10 @@ data "aws_caller_identity" "current" {}
 # ========================================
 
 resource "aws_s3_bucket" "vectors" {
-  bucket = "finplex-vectors-${data.aws_caller_identity.current.account_id}"
+  bucket = "legal-companion-vectors-${data.aws_caller_identity.current.account_id}"
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
@@ -65,7 +65,7 @@ resource "aws_s3_bucket_public_access_block" "vectors" {
 
 # IAM role for Lambda
 resource "aws_iam_role" "lambda_role" {
-  name = "finplex-ingest-lambda-role"
+  name = "legal-companion-ingest-lambda-role"
   
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -81,14 +81,14 @@ resource "aws_iam_role" "lambda_role" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
 
 # Lambda policy for S3 Vectors and SageMaker
 resource "aws_iam_role_policy" "lambda_policy" {
-  name = "finplex-ingest-lambda-policy"
+  name = "legal-companion-ingest-lambda-policy"
   role = aws_iam_role.lambda_role.id
   
   policy = jsonencode({
@@ -139,7 +139,7 @@ resource "aws_iam_role_policy" "lambda_policy" {
 
 # Lambda function
 resource "aws_lambda_function" "ingest" {
-  function_name = "finplex-ingest"
+  function_name = "legal-companion-ingest"
   role          = aws_iam_role.lambda_role.arn
   
   # Note: The deployment package will be created by the guide instructions
@@ -159,18 +159,18 @@ resource "aws_lambda_function" "ingest" {
   }
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
 
 # CloudWatch Log Group
 resource "aws_cloudwatch_log_group" "lambda_logs" {
-  name              = "/aws/lambda/finplex-ingest"
+  name              = "/aws/lambda/legal-companion-ingest"
   retention_in_days = 7
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
@@ -181,15 +181,15 @@ resource "aws_cloudwatch_log_group" "lambda_logs" {
 
 # REST API
 resource "aws_api_gateway_rest_api" "api" {
-  name        = "finplex-api"
-  description = "finPlex Financial Planner API"
+  name        = "legal-companion-api"
+  description = "legal-companion Planner API"
   
   endpoint_configuration {
     types = ["REGIONAL"]
   }
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
@@ -254,24 +254,24 @@ resource "aws_api_gateway_stage" "api" {
   stage_name    = "prod"
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
 
 # API Key
 resource "aws_api_gateway_api_key" "api_key" {
-  name = "finplex-api-key"
+  name = "legal-companion-api-key"
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "3"
   }
 }
 
 # Usage Plan
 resource "aws_api_gateway_usage_plan" "plan" {
-  name = "finplex-usage-plan"
+  name = "legal-companion-usage-plan"
   
   api_stages {
     api_id = aws_api_gateway_rest_api.api.id

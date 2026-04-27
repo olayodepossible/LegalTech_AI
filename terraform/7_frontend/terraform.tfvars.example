@@ -9,3 +9,12 @@ aws_region = "us-east-1"
 # The issuer is: https://[your-instance].clerk.accounts.dev
 clerk_jwks_url = "https://engaging-feline-80.clerk.accounts.dev/.well-known/jwks.json"
 clerk_issuer   = "https://engaging-feline-80.clerk.accounts.dev"
+
+# OpenRouter (required for POST /api/contracts/analyze) — get from https://openrouter.ai/keys
+# Or set TF_VAR_openrouter_api_key instead of this file
+openrouter_api_key = "sk-or-v1-your-key-here"
+
+# POST /api/chat proxies to App Runner; APP_RUNNER_URL is set from terraform/4_researcher remote state.
+# Apply Part 4 first so ../4_researcher/terraform.tfstate exists and includes the researcher service.
+
+# RAG uploads use the Part 3 vectors bucket `legal-companion-vectors-<account>`; apply terraform/3_ingestion first so it exists.

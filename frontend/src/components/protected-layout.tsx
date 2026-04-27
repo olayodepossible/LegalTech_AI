@@ -1,10 +1,19 @@
 "use client";
 
 import { AppShell } from "@/components/app-shell";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@clerk/react";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const { isLoaded, userId } = useAuth();
+  const router = useRouter();
+
+  useEffect(() => {
+    if (isLoaded && !userId) {
+      router.replace("/login");
+    }
+  }, [isLoaded, userId, router]);
 
   if (!isLoaded) {
     return (
@@ -16,7 +25,12 @@ export function ProtectedLayout({ children }: { children: React.ReactNode }) {
   }
 
   if (!userId) {
-    return null;
+    return (
+      <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+        Redirecting to sign in…
+      </div>
+    );
   }
 
   return (

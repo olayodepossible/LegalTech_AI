@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
+import { ClerkAppProvider } from "@/components/clerk-app-provider";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -17,7 +17,7 @@ export const metadata: Metadata = {
   title: "LegalTech AI",
   description: "Legal workspace — dashboard and AI assistance",
   icons: {
-    icon: "/favicon.ico",
+    icon: [{ url: "/favicon.ico", type: "image/x-icon" }],
   },
 };
 
@@ -27,7 +27,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <ClerkProvider>
+    <ClerkAppProvider>
       <html
         lang="en"
         className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
@@ -40,6 +40,6 @@ export default function RootLayout({
           {children}
         </body>
       </html>
-    </ClerkProvider>
+    </ClerkAppProvider>
   );
 }

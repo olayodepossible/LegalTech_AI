@@ -1,10 +1,14 @@
 "use client";
 
-import { postContractAnalyze, type ContractAnalysisResult } from "@/lib/api";
+import {
+  logActivityRemote,
+  postContractAnalyze,
+  type ContractAnalysisResult,
+} from "@/lib/api";
 import { RESPONSE_LANGUAGES, languageLabel } from "@/lib/languages";
-import { appendChatMessage, getChatMessages, logActivity } from "@/lib/local-store";
+import { appendChatMessage, getChatMessages } from "@/lib/local-store";
 import type { ChatMessage } from "@/types/app";
-import { useAuth, useUser } from "@clerk/nextjs";
+import { useAuth, useUser } from "@clerk/react";
 import { useEffect, useRef, useState } from "react";
 
 type ConcernItem = { title: string; detail: string };
@@ -14,9 +18,20 @@ function formatAnalysisMarkdown(data: ContractAnalysisResult): string {
   lines.push("## Summary\n", data.executive_summary, "\n");
   const section = (title: string, items: ConcernItem[]) => {
     lines.push(`## ${title}\n`);
-    if (!items.length) items = [{ title: "None noted", detail: "—" }];
+    if (!items.length) {
+      lines.push("*No items identified in this category.*\n\n");
+      return;
+    }
     for (const it of items) {
-      lines.push(`- **${it.title}** — ${it.detail}\n`);
+      const t = (it.title ?? "").trim();
+      const d = (it.detail ?? "").trim();
+      if (t && d) {
+        lines.push(`- **${t}** — ${d}\n`);
+      } else if (t) {
+        lines.push(`- **${t}**\n`);
+      } else if (d) {
+        lines.push(`- ${d}\n`);
+      }
     }
     lines.push("\n");
   };
@@ -52,9 +67,9 @@ export default function ContractAnalysisPage() {
 
   useEffect(() => {
     if (!userId) return;
-    logActivity(userId, "visit_contract_analysis", "Opened contract analysis");
+    logActivityRemote(getToken, "visit_contract_analysis", "Opened contract analysis");
     setMessages(getChatMessages(userId, "contract"));
-  }, [userId]);
+  }, [userId, getToken]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -100,10 +115,10 @@ export default function ContractAnalysisPage() {
       at: new Date().toISOString(),
     };
 
-    let stored = appendChatMessage(userId, userMsg, "contract");
+    let stored = appendChatMessage(userId, userMsg, { scope: "contract" });
     setMessages(stored);
-    logActivity(
-      userId,
+    logActivityRemote(
+      getToken,
       "document_upload",
       "Contract analysis upload",
       file.name,
@@ -128,10 +143,10 @@ export default function ContractAnalysisPage() {
         languageCode: language,
         at: new Date().toISOString(),
       };
-      stored = appendChatMessage(userId, assistantMsg, "contract");
+      stored = appendChatMessage(userId, assistantMsg, { scope: "contract" });
       setMessages(stored);
-      logActivity(
-        userId,
+      logActivityRemote(
+        getToken,
         "chat_message",
         "Contract analysis completed",
         languageLabel(language),
@@ -147,7 +162,7 @@ export default function ContractAnalysisPage() {
         languageCode: language,
         at: new Date().toISOString(),
       };
-      stored = appendChatMessage(userId, assistantMsg, "contract");
+      stored = appendChatMessage(userId, assistantMsg, { scope: "contract" });
       setMessages(stored);
     } finally {
       setSending(false);

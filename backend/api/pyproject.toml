@@ -8,12 +8,15 @@ dependencies = [
     "contract-analyst",
     "fastapi>=0.116.1",
     "fastapi-clerk-auth>=0.0.7",
+    "httpx>=0.28.1",
     "mangum>=0.19.0",
     "openai>=1.59.0",
     "pydantic>=2.11.7",
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.9",
     "python-jose>=3.5.0",
+    "requests>=2.32.4",
+    "tenacity>=9.1.2",
     "uvicorn>=0.35.0",
 ]
 

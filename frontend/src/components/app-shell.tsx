@@ -1,10 +1,11 @@
 "use client";
 
-import { UserButton, useUser } from "@clerk/nextjs";
+import { ChatSidebarHistory } from "@/components/chat-sidebar-history";
+import { UserButton, useUser } from "@clerk/react";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { Suspense, useState } from "react";
 
 const nav: {
   href: string;
@@ -14,7 +15,7 @@ const nav: {
   { href: "/dashboard", label: "Home", isActive: (p) => p === "/dashboard" },
   {
     href: "/chat",
-    label: "Chat",
+    label: "New Chat",
     isActive: (p) => p === "/chat",
   },
   {
@@ -22,7 +23,7 @@ const nav: {
     label: "Contract analysis",
     isActive: (p) => p.startsWith("/chat/contract"),
   },
-  { href: "/rag", label: "RAG doc", isActive: (p) => p.startsWith("/rag") },
+  { href: "/rag", label: "Upload documents", isActive: (p) => p.startsWith("/rag") },
 ];
 
 function IconHome({ className }: { className?: string }) {
@@ -184,34 +185,44 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           </div>
 
-          <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main">
-            {nav.map((item) => {
-              const active = item.isActive(pathname);
-              const Icon = iconFor(item.href);
-              return (
-                <Link
-                  key={item.href}
-                  href={item.href}
-                  onClick={() => setMobileNavOpen(false)}
-                  className={[
-                    "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
-                    active
-                      ? "bg-indigo-100 text-indigo-950 dark:bg-indigo-950/50 dark:text-indigo-100"
-                      : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800/80",
-                  ].join(" ")}
-                >
-                  <Icon
+          <nav
+            className="flex min-h-0 flex-1 flex-col gap-0 p-3"
+            aria-label="Main"
+          >
+            <div className="flex flex-col gap-0.5">
+              {nav.map((item) => {
+                const active = item.isActive(pathname);
+                const Icon = iconFor(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileNavOpen(false)}
                     className={[
-                      "h-5 w-5 shrink-0",
+                      "flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
                       active
-                        ? "text-indigo-700 dark:text-indigo-200"
-                        : "text-zinc-500 dark:text-zinc-500",
+                        ? "bg-indigo-100 text-indigo-950 dark:bg-indigo-950/50 dark:text-indigo-100"
+                        : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800/80",
                     ].join(" ")}
-                  />
-                  {item.label}
-                </Link>
-              );
-            })}
+                  >
+                    <Icon
+                      className={[
+                        "h-5 w-5 shrink-0",
+                        active
+                          ? "text-indigo-700 dark:text-indigo-200"
+                          : "text-zinc-500 dark:text-zinc-500",
+                      ].join(" ")}
+                    />
+                    {item.label}
+                  </Link>
+                );
+              })}
+            </div>
+            <Suspense fallback={null}>
+              <ChatSidebarHistory
+                onNavigate={() => setMobileNavOpen(false)}
+              />
+            </Suspense>
           </nav>
 
           <div className="shrink-0 border-t border-zinc-100 p-3 text-xs text-zinc-500 dark:border-zinc-800 dark:text-zinc-500">

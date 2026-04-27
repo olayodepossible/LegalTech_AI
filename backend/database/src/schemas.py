@@ -33,9 +33,9 @@ class UserCreate(BaseModel):
 
 
 class ActivityHistoryCreate(BaseModel):
-    """Matches ActivityHistory.create_activity_history(...)."""
+    """Matches ActivityHistory.create_activity_history(...). API routes set ``clerk_user_id`` from the JWT."""
 
-    clerk_user_id: str
+    clerk_user_id: Optional[str] = None
     account_name: str = Field(..., max_length=255)
     email: Optional[str] = Field(None, max_length=255)
     details: Optional[str] = None

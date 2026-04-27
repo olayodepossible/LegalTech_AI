@@ -25,7 +25,7 @@ data "aws_caller_identity" "current" {}
 
 # ECR repository for the researcher Docker image
 resource "aws_ecr_repository" "researcher" {
-  name                 = "finplex-researcher"
+  name                 = "legal-companion-researcher"
   image_tag_mutability = "MUTABLE"
   force_delete         = true  # Allow deletion even with images
   
@@ -34,7 +34,7 @@ resource "aws_ecr_repository" "researcher" {
   }
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "4"
   }
 }
@@ -45,8 +45,7 @@ resource "aws_ecr_repository" "researcher" {
 
 # IAM role for App Runner
 resource "aws_iam_role" "app_runner_role" {
-  name = "finplex-app-runner-role"
-  
+  name = "legal-companion-app-runner-role"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -68,7 +67,7 @@ resource "aws_iam_role" "app_runner_role" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "4"
   }
 }
@@ -81,7 +80,7 @@ resource "aws_iam_role_policy_attachment" "app_runner_ecr_access" {
 
 # IAM role for App Runner instance (runtime access to AWS services)
 resource "aws_iam_role" "app_runner_instance_role" {
-  name = "finplex-app-runner-instance-role"
+  name = "legal-companion-app-runner-instance-role"
   
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
@@ -97,14 +96,14 @@ resource "aws_iam_role" "app_runner_instance_role" {
   })
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "4"
   }
 }
 
 # Policy for App Runner instance to access Bedrock
 resource "aws_iam_role_policy" "app_runner_instance_bedrock_access" {
-  name = "finplex-app-runner-instance-bedrock-policy"
+  name = "legal-companion-app-runner-instance-bedrock-policy"
   role = aws_iam_role.app_runner_instance_role.id
   
   policy = jsonencode({
@@ -125,7 +124,7 @@ resource "aws_iam_role_policy" "app_runner_instance_bedrock_access" {
 
 # App Runner service
 resource "aws_apprunner_service" "researcher" {
-  service_name = "finplex-researcher"
+  service_name = "legal-companion-researcher"
   
   source_configuration {
     auto_deployments_enabled = false
@@ -140,10 +139,11 @@ resource "aws_apprunner_service" "researcher" {
       image_configuration {
         port = "8000"
         runtime_environment_variables = {
-          OPENAI_API_KEY    = var.openai_api_key
-          FINPLEX_API_ENDPOINT = var.finPlex_api_endpoint
-          FINPLEX_API_KEY      = var.finPlex_api_key
+          OPENAI_API_KEY     = var.openai_api_key
+          LEGAL_API_ENDPOINT  = var.legal_api_endpoint
+          LEGAL_API_KEY       = var.legal_api_key
           OPENROUTER_API_KEY  = var.openrouter_api_key
+          OPENAI_CHAT_MODEL   = var.openai_chat_model
         }
       }
       image_repository_type = "ECR"
@@ -157,140 +157,7 @@ resource "aws_apprunner_service" "researcher" {
   }
   
   tags = {
-    Project = "finplex"
+    Project = "legal-companion"
     Part    = "4"
   }
-}
-
-# ========================================
-# EventBridge Scheduler (Optional)
-# ========================================
-
-# IAM role for EventBridge
-resource "aws_iam_role" "eventbridge_role" {
-  count = var.scheduler_enabled ? 1 : 0
-  name  = "finplex-eventbridge-scheduler-role"
-  
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "scheduler.amazonaws.com"
-        }
-      }
-    ]
-  })
-  
-  tags = {
-    Project = "finplex"
-    Part    = "4"
-  }
-}
-
-# Lambda function for invoking researcher
-resource "aws_lambda_function" "scheduler_lambda" {
-  count         = var.scheduler_enabled ? 1 : 0
-  function_name = "finplex-researcher-scheduler"
-  role          = aws_iam_role.lambda_scheduler_role[0].arn
-  
-  # Note: The deployment package will be created by the guide instructions
-  filename         = "${path.module}/../../backend/scheduler/lambda_function.zip"
-  source_code_hash = fileexists("${path.module}/../../backend/scheduler/lambda_function.zip") ? filebase64sha256("${path.module}/../../backend/scheduler/lambda_function.zip") : null
-  
-  handler     = "lambda_function.handler"
-  runtime     = "python3.12"
-  timeout     = 180  # 3 minutes to handle App Runner response time
-  memory_size = 256
-  
-  environment {
-    variables = {
-      APP_RUNNER_URL = aws_apprunner_service.researcher.service_url
-    }
-  }
-  
-  tags = {
-    Project = "finplex"
-    Part    = "4"
-  }
-}
-
-# IAM role for scheduler Lambda
-resource "aws_iam_role" "lambda_scheduler_role" {
-  count = var.scheduler_enabled ? 1 : 0
-  name  = "finplex-scheduler-lambda-role"
-  
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRole"
-        Effect = "Allow"
-        Principal = {
-          Service = "lambda.amazonaws.com"
-        }
-      }
-    ]
-  })
-  
-  tags = {
-    Project = "finplex"
-    Part    = "4"
-  }
-}
-
-# Lambda basic execution policy
-resource "aws_iam_role_policy_attachment" "lambda_scheduler_basic" {
-  count      = var.scheduler_enabled ? 1 : 0
-  role       = aws_iam_role.lambda_scheduler_role[0].name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-}
-
-# EventBridge schedule
-resource "aws_scheduler_schedule" "research_schedule" {
-  count = var.scheduler_enabled ? 1 : 0
-  name  = "finplex-research-schedule"
-  
-  flexible_time_window {
-    mode = "OFF"
-  }
-  
-  schedule_expression = "rate(2 hours)"
-  
-  target {
-    arn      = aws_lambda_function.scheduler_lambda[0].arn
-    role_arn = aws_iam_role.eventbridge_role[0].arn
-  }
-}
-
-# Permission for EventBridge to invoke Lambda
-resource "aws_lambda_permission" "allow_eventbridge" {
-  count         = var.scheduler_enabled ? 1 : 0
-  statement_id  = "AllowExecutionFromEventBridge"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.scheduler_lambda[0].function_name
-  principal     = "scheduler.amazonaws.com"
-  source_arn    = aws_scheduler_schedule.research_schedule[0].arn
-}
-
-# Policy for EventBridge to invoke Lambda
-resource "aws_iam_role_policy" "eventbridge_invoke_lambda" {
-  count = var.scheduler_enabled ? 1 : 0
-  name  = "InvokeLambdaPolicy"
-  role  = aws_iam_role.eventbridge_role[0].id
-  
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Effect = "Allow"
-        Action = [
-          "lambda:InvokeFunction"
-        ]
-        Resource = aws_lambda_function.scheduler_lambda[0].arn
-      }
-    ]
-  })
 }

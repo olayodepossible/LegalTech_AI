@@ -2,6 +2,11 @@
 """
 Run DDL against Aurora via RDS Data API.
 Statements must match migrations/001_schema.sql (executed one-by-one).
+
+``AURORA_DATABASE`` must be the PostgreSQL database name on the cluster
+(``database_name`` in terraform/5_database — default ``legalcompanion``), not the
+cluster identifier (e.g. ``legal-companion-aurora-cluster``). A wrong name yields
+``database \"...\" does not exist``.
 """
 
 import os
@@ -15,7 +20,7 @@ load_dotenv(override=True)
 
 cluster_arn = os.environ.get("AURORA_CLUSTER_ARN")
 secret_arn = os.environ.get("AURORA_SECRET_ARN")
-database = os.environ.get("AURORA_DATABASE", "legaltech")
+database = os.environ.get("AURORA_DATABASE", "legalcompanion")
 region = os.environ.get("DEFAULT_AWS_REGION", "us-east-1")
 
 if not cluster_arn or not secret_arn:
@@ -77,11 +82,50 @@ $$ LANGUAGE plpgsql""",
     """CREATE TRIGGER update_jobs_updated_at
     BEFORE UPDATE ON jobs
     FOR EACH ROW EXECUTE PROCEDURE update_updated_at_column()""",
+    # migrations/002_legal_chats.sql — POST /api/chat persistence
+    """CREATE TABLE IF NOT EXISTS legal_chats (
+    id UUID PRIMARY KEY,
+    clerk_user_id VARCHAR(255) NOT NULL REFERENCES users(clerk_user_id) ON DELETE CASCADE,
+    title VARCHAR(512) NOT NULL DEFAULT 'New chat',
+    language VARCHAR(16) NOT NULL DEFAULT 'en',
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW()
+)""",
+    """CREATE TABLE IF NOT EXISTS legal_chat_messages (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    chat_id UUID NOT NULL REFERENCES legal_chats(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL,
+    content TEXT NOT NULL,
+    language_code VARCHAR(16) NOT NULL DEFAULT 'en',
+    created_at TIMESTAMP WITHOUT TIME ZONE DEFAULT NOW(),
+    CONSTRAINT legal_chat_messages_role_check CHECK (role IN ('user', 'assistant'))
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_legal_chats_user_updated ON legal_chats(clerk_user_id, updated_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_legal_chat_messages_chat_created ON legal_chat_messages(chat_id, created_at)",
 ]
+
+
+def _hint_if_db_missing(msg: str) -> None:
+    if "does not exist" not in msg.lower() or "database" not in msg.lower():
+        return
+    print()
+    print(
+        "  Hint: The database name in AURORA_DATABASE must exist on the Aurora cluster."
+    )
+    print(f"  You are using AURORA_DATABASE={database!r}")
+    print(
+        "  For Terraform Part 5 in this repo, set AURORA_DATABASE=legalcompanion "
+        "(see aws_rds_cluster.aurora.database_name)."
+    )
+    print(
+        "  Do not use the cluster id (e.g. legal-companion-aurora-cluster) or "
+        "legal-companion as the database name unless you created that database."
+    )
 
 
 def main() -> None:
     print("Running migrations...")
+    print(f"  database={database!r}  region={region!r}")
     ok = 0
     err = 0
     for i, stmt in enumerate(statements, 1):
@@ -103,6 +147,7 @@ def main() -> None:
                 ok += 1
             else:
                 print(f"   error: {msg[:200]}")
+                _hint_if_db_missing(msg)
                 err += 1
 
     print(f"\nDone: {ok} ok, {err} errors")
