@@ -12,6 +12,21 @@ export function ChatMarkdown({ content }: Props) {
     <div className="text-sm leading-relaxed [&_p]:mb-2 [&_p]:last:mb-0">
       <ReactMarkdown
         components={{
+          h1: ({ children }) => (
+            <h1 className="mb-2 mt-4 text-lg font-semibold tracking-tight text-zinc-900 first:mt-0 dark:text-zinc-50">
+              {children}
+            </h1>
+          ),
+          h2: ({ children }) => (
+            <h2 className="mb-2 mt-4 text-base font-semibold tracking-tight text-zinc-900 first:mt-0 dark:text-zinc-50">
+              {children}
+            </h2>
+          ),
+          h3: ({ children }) => (
+            <h3 className="mb-1.5 mt-3 text-sm font-semibold text-zinc-900 first:mt-0 dark:text-zinc-100">
+              {children}
+            </h3>
+          ),
           p: ({ children }) => <p className="whitespace-pre-line">{children}</p>,
           strong: ({ children }) => (
             <strong className="font-semibold text-zinc-900 dark:text-zinc-100">

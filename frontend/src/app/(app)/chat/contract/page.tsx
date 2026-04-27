@@ -7,6 +7,7 @@ import {
 } from "@/lib/api";
 import { RESPONSE_LANGUAGES, languageLabel } from "@/lib/languages";
 import { appendChatMessage, getChatMessages } from "@/lib/local-store";
+import { ChatMarkdown } from "@/components/chat-markdown";
 import type { ChatMessage } from "@/types/app";
 import { useAuth, useUser } from "@clerk/react";
 import { useEffect, useRef, useState } from "react";
@@ -269,7 +270,11 @@ export default function ContractAnalysisPage() {
                         ))}
                       </ul>
                     ) : null}
-                    <div className="whitespace-pre-wrap">{m.content}</div>
+                    {m.role === "assistant" ? (
+                      <ChatMarkdown content={m.content} />
+                    ) : (
+                      <p className="whitespace-pre-wrap">{m.content}</p>
+                    )}
                   </div>
                 </li>
               ))}
