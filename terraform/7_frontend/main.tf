@@ -33,6 +33,11 @@ data "aws_sqs_queue" "analysis_jobs" {
   name = "legal-companion-analysis-jobs"
 }
 
+# Part 3 RAG ingest queue — create with terraform/3_ingestion before relying on this data source
+data "aws_sqs_queue" "rag_ingest" {
+  name = "legal-companion-rag-ingest"
+}
+
 # Part 4 researcher (App Runner) — API Lambda proxies POST /api/chat to this host
 data "terraform_remote_state" "researcher" {
   backend = "local"
@@ -180,7 +185,36 @@ resource "aws_iam_role_policy" "api_lambda_sqs" {
           "sqs:SendMessage",
           "sqs:GetQueueAttributes"
         ]
-        Resource = data.aws_sqs_queue.analysis_jobs.arn
+        Resource = [
+          data.aws_sqs_queue.analysis_jobs.arn,
+          data.aws_sqs_queue.rag_ingest.arn,
+        ]
+      }
+    ]
+  })
+}
+
+# RAG: embed user query and search S3 Vectors (see backend/api/rag_retrieval.py)
+resource "aws_iam_role_policy" "api_lambda_rag_vectors" {
+  name = "${local.name_prefix}-api-lambda-rag-vectors"
+  role = aws_iam_role.api_lambda_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "sagemaker:InvokeEndpoint"
+        ]
+        Resource = "arn:aws:sagemaker:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:endpoint/${var.sagemaker_endpoint_name}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3vectors:QueryVectors"
+        ]
+        Resource = "arn:aws:s3vectors:${data.aws_region.current.name}:${data.aws_caller_identity.current.account_id}:bucket/${data.aws_s3_bucket.vectors.id}/index/*"
       }
     ]
   })
@@ -262,8 +296,15 @@ resource "aws_lambda_function" "api" {
       # CORS configuration
       CORS_ORIGINS = "http://localhost:3000,https://${aws_cloudfront_distribution.main.domain_name}"
 
-      # SQS (Part 6) — used by RAG/ingest paths in the API Lambda
+      # SQS (Part 6) — job queue
       SQS_QUEUE_URL = data.aws_sqs_queue.analysis_jobs.url
+      # SQS (Part 3) — RAG document → vector index worker; prefer this for uploads (see main.py upload_rag_document)
+      RAG_INGESTION_QUEUE_URL = data.aws_sqs_queue.rag_ingest.url
+
+      # S3 Vectors + SageMaker — legal chat RAG retrieval (backend/api/rag_retrieval.py)
+      VECTOR_BUCKET      = data.aws_s3_bucket.vectors.id
+      INDEX_NAME         = var.vector_index_name
+      SAGEMAKER_ENDPOINT = var.sagemaker_endpoint_name
 
       # OpenRouter (contract analysis, etc.) — see backend/contract_analyst/service.py
       OPENROUTER_API_KEY = var.openrouter_api_key
@@ -281,6 +322,7 @@ resource "aws_lambda_function" "api" {
     aws_iam_role_policy.api_lambda_aurora,
     aws_iam_role_policy.api_lambda_sqs,
     aws_iam_role_policy.api_lambda_s3_rag,
+    aws_iam_role_policy.api_lambda_rag_vectors,
     aws_iam_role_policy.api_lambda_invoke,
     aws_cloudfront_distribution.main
   ]

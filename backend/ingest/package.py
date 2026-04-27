@@ -58,6 +58,12 @@ def create_deployment_package():
         shutil.copy(current_dir / 'ingest_s3vectors.py', package_dir)
     if (current_dir / 'search_s3vectors.py').exists():
         shutil.copy(current_dir / 'search_s3vectors.py', package_dir)
+    if (current_dir / 'rag_ingest_worker.py').exists():
+        shutil.copy(current_dir / 'rag_ingest_worker.py', package_dir)
+
+    flow_src = current_dir.parent / "database" / "src" / "flow_log.py"
+    if flow_src.exists():
+        shutil.copy2(flow_src, package_dir / "flow_log.py")
     
     # Create ZIP file
     print("Creating deployment package...")
@@ -77,11 +83,11 @@ def create_deployment_package():
     
     # Get file size
     size_mb = zip_path.stat().st_size / (1024 * 1024)
-    print(f"\n✅ Deployment package created: {zip_path}")
+    print(f"\nOK: Deployment package created: {zip_path}")
     print(f"   Size: {size_mb:.2f} MB")
     
     if size_mb > 50:
-        print("⚠️  Warning: Package exceeds 50MB. Consider using Lambda Layers.")
+        print("Warning: Package exceeds 50MB. Consider using Lambda Layers.")
     
     return str(zip_path)
 

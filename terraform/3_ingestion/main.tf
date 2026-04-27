@@ -155,6 +155,7 @@ resource "aws_lambda_function" "ingest" {
     variables = {
       VECTOR_BUCKET      = aws_s3_bucket.vectors.id
       SAGEMAKER_ENDPOINT = var.sagemaker_endpoint_name
+      INDEX_NAME           = var.vector_index_name
     }
   }
   
@@ -294,4 +295,124 @@ resource "aws_api_gateway_usage_plan_key" "plan_key" {
   key_id        = aws_api_gateway_api_key.api_key.id
   key_type      = "API_KEY"
   usage_plan_id = aws_api_gateway_usage_plan.plan.id
+}
+
+# ========================================
+# RAG document ingest (S3 upload -> chunks -> S3 Vectors)
+# ========================================
+
+resource "aws_sqs_queue" "rag_ingest_dlq" {
+  name = "legal-companion-rag-ingest-dlq"
+  tags = {
+    Project = "legal-companion"
+    Part    = "3"
+  }
+}
+
+resource "aws_sqs_queue" "rag_ingest" {
+  name                       = "legal-companion-rag-ingest"
+  visibility_timeout_seconds = 360
+  message_retention_seconds  = 86400
+  receive_wait_time_seconds  = 10
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.rag_ingest_dlq.arn
+    maxReceiveCount     = 3
+  })
+  tags = {
+    Project = "legal-companion"
+    Part    = "3"
+  }
+}
+
+# Dedicated role: worker reads user uploads, writes vectors
+resource "aws_iam_role" "rag_worker" {
+  name = "legal-companion-rag-worker-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+  tags = { Project = "legal-companion", Part = "3" }
+}
+
+resource "aws_iam_role_policy" "rag_worker" {
+  name = "legal-companion-rag-worker-policy"
+  role = aws_iam_role.rag_worker.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "logs:CreateLogGroup",
+          "logs:CreateLogStream",
+          "logs:PutLogEvents"
+        ]
+        Resource = "arn:aws:logs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["s3:GetObject"]
+        Resource = "${aws_s3_bucket.vectors.arn}/*"
+      },
+      {
+        Effect = "Allow"
+        Action = ["sagemaker:InvokeEndpoint"]
+        Resource = "arn:aws:sagemaker:${var.aws_region}:${data.aws_caller_identity.current.account_id}:endpoint/${var.sagemaker_endpoint_name}"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3vectors:PutVectors",
+          "s3vectors:QueryVectors"
+        ]
+        Resource = "arn:aws:s3vectors:${var.aws_region}:${data.aws_caller_identity.current.account_id}:bucket/${aws_s3_bucket.vectors.id}/index/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "sqs:ReceiveMessage",
+          "sqs:DeleteMessage",
+          "sqs:GetQueueAttributes"
+        ]
+        Resource = aws_sqs_queue.rag_ingest.arn
+      }
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "rag_worker" {
+  name              = "/aws/lambda/legal-companion-rag-ingest-worker"
+  retention_in_days = 14
+  tags              = { Project = "legal-companion", Part = "3" }
+}
+
+resource "aws_lambda_function" "rag_ingest_worker" {
+  function_name    = "legal-companion-rag-ingest-worker"
+  role             = aws_iam_role.rag_worker.arn
+  filename         = "${path.module}/../../backend/ingest/lambda_function.zip"
+  source_code_hash = fileexists("${path.module}/../../backend/ingest/lambda_function.zip") ? filebase64sha256("${path.module}/../../backend/ingest/lambda_function.zip") : null
+  handler          = "rag_ingest_worker.lambda_handler"
+  runtime          = "python3.12"
+  timeout          = 300
+  memory_size      = 1024
+  environment {
+    variables = {
+      VECTOR_BUCKET      = aws_s3_bucket.vectors.id
+      INDEX_NAME         = var.vector_index_name
+      SAGEMAKER_ENDPOINT = var.sagemaker_endpoint_name
+    }
+  }
+  tags = { Project = "legal-companion", Part = "3" }
+  depends_on = [aws_cloudwatch_log_group.rag_worker]
+}
+
+resource "aws_lambda_event_source_mapping" "rag_sqs" {
+  event_source_arn = aws_sqs_queue.rag_ingest.arn
+  function_name    = aws_lambda_function.rag_ingest_worker.arn
+  batch_size       = 3
+  function_response_types = ["ReportBatchItemFailures"]
 }

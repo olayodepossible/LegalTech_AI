@@ -3,6 +3,16 @@ output "vector_bucket_name" {
   value       = aws_s3_bucket.vectors.id
 }
 
+output "rag_ingest_queue_url" {
+  description = "SQS queue URL for POST /api/rag/documents/upload ingestion (set API RAG_INGESTION_QUEUE_URL)"
+  value       = aws_sqs_queue.rag_ingest.url
+}
+
+output "rag_ingest_queue_arn" {
+  description = "SQS queue ARN for RAG document ingest"
+  value       = aws_sqs_queue.rag_ingest.arn
+}
+
 output "api_endpoint" {
   description = "API Gateway endpoint URL"
   value       = "${aws_api_gateway_stage.api.invoke_url}/ingest"

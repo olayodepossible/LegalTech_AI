@@ -64,6 +64,19 @@ Pick something trending or significant happening in the legal sector right now.
 Follow all three steps: browse, analyze, and store your findings."""
 
 
+def build_user_context_block() -> str:
+    """
+    Greeting policy: the model must infer how to address the user only from this thread
+    (Prior messages + current request). No server-supplied name is passed in.
+    """
+    return (
+        "### User context (greeting; tone only)\n"
+        "- **How to address the user:** Rely on **this conversation** only. Check **Prior messages** and the **current request** for a name, nickname, or how they want to be addressed, and use a **brief, natural** salutation in the user’s **response language** when that is clear and appropriate.\n"
+        "- If they have **not** shared a name or preferred form of address in the thread, use a **warm, generic** opening (e.g. “Hi there —” / the right locale equivalent). **Do not** make up a name and **do not** claim a name from a user profile (you do not have one here).\n"
+        "- Stay warm and professional when steering toward **legal** topics, as in your main instructions.\n"
+    )
+
+
 def build_response_language_block(iso_code: str) -> str:
     """
     Preamble the model / evaluator / refiner see first. The UI "Response language" is wired here
@@ -120,40 +133,103 @@ def research_footer_serper(iso_code: str) -> str:
     return t.get(code, t["en"])
 
 
-def research_footer_no_serper(iso_code: str) -> str:
+def research_footer_optional_serper_unavailable(
+    iso_code: str, *, serper_configured: bool
+) -> str:
+    """
+    Shown when the *evaluator* asked for a second pass, but the user still sees the primary
+    draft only. ``serper_configured`` distinguishes “API key not set” vs “Serper was enabled but
+    the refinement step returned nothing or errored”.
+
+    This is *not* “quality review or guardrails failed” — review already ran; only the *optional*
+    Serper (Google) web-search refinement is missing.
+    """
     code = (iso_code or "en").strip() or "en"
-    t = {
-        "en": (
-            "\n\n---\n_Automated review suggested more targeted web research, but refinement is unavailable. "
-            "Set `SERPER_API_KEY` (https://serper.dev) for Google search via Serper, or re-run with a more specific "
-            "topic._"
-        ),
-        "es": (
-            "\n\n---\n_La revisión automática sugirió una búsqueda web más afinada, pero el refinado no está "
-            "disponible. Configure `SERPER_API_KEY` (https://serper.dev) o replantee con un tema más concreto._"
-        ),
-        "fr": (
-            "\n\n---\n_La revue automatique suggère une recherche web plus ciblée, mais l’affinement n’est pas "
-            "disponible. Configurez `SERPER_API_KEY` (https://serper.dev) ou relancez avec un sujet plus "
-            "précis._"
-        ),
-        "de": (
-            "\n\n---\n_Die automatische Prüfung empfahl gezieltere Recherche, Verfeinerung steht nicht zur "
-            "Verfügung. Setzen Sie `SERPER_API_KEY` (https://serper.dev) oder starten Sie mit einem präziseren Thema._"
-        ),
-        "pt": (
-            "\n\n---\n_A revisão automática sugeriu pesquisa web mais alvo, mas o refinamento não está "
-            "disponível. Defina `SERPER_API_KEY` (https://serper.dev) ou tente de novo com um tópico mais "
-            "específico._"
-        ),
-    }
+    if not serper_configured:
+        t = {
+            "en": (
+                "\n\n---\n_The answer above is the full **primary** result, including an automated quality review. "
+                "A follow-up check suggested that **optional** extra web search (Serper / Google) could strengthen the "
+                "note; that second pass is **not** available here because `SERPER_API_KEY` is not set on the research "
+                "service. This does not mean a safety or quality check was skipped—only the add-on search step. "
+                "If you deploy this service, add a key at https://serper.dev . Not legal advice._"
+            ),
+            "es": (
+                "\n\n---\n_La respuesta de arriba es el resultado **principal** completo, incluida una revisión "
+                "automática de calidad. Una comprobación posterior sugirió búsqueda web **opcional** adicional (Serper); "
+                "ese segundo paso **no** está activo aquí porque no hay `SERPER_API_KEY` en el servicio. "
+                "Eso no implica que se omitan controles básicos de calidad, solo el paso extra de búsqueda. "
+                "Quien despliega el servicio puede añadir una clave en https://serper.dev . No es asesoramiento legal._"
+            ),
+            "fr": (
+                "\n\n---\n_La réponse ci-dessus est le résultat **principal** complet, avec revue de qualité "
+                "automatique. Un contrôle ultérieur a suggéré une recherche web **optionnelle** (Serper) ; "
+                "cette 2e passe **n’est pas** disponible ici, faute de `SERPER_API_KEY` sur le service. "
+                "Cela ne signifie pas l’absence d’un contrôle de fond : seul le complément de recherche manque. "
+                "Côté déploiement : clé sur https://serper.dev . Ce n’est pas un avis juridique._"
+            ),
+            "de": (
+                "\n\n---\n_Der Text oben ist die vollständige **Haupt**antwort inkl. automatischer Qualitätsprüfung. "
+                "Ein Folgecheck empfahl **optionale** Zusatzrecherche (Serper / Google); dieser Schritt **fehlt** hier, "
+                "weil `SERPER_API_KEY` am Recherchedienst nicht gesetzt ist. "
+                "Das betrifft nur die Zusatzsuche, nicht die grundlegende Prüfung. "
+                "Betreiber: Schlüssel unter https://serper.dev . Keine Rechtsberatung._"
+            ),
+            "pt": (
+                "\n\n---\n_A resposta acima é o resultado **principal** completo, com revisão automática de qualidade. "
+                "Uma verificação seguinte sugeriu pesquisa web **opcional** extra (Serper); essa 2.ª passagem **não** "
+                "está disponível aqui porque `SERPER_API_KEY` não está definida no serviço. "
+                "Isso não indica que controles básicos tenham falhado—apenas a etapa adicional de busca. "
+                "Quem opera o serviço pode definir a chave em https://serper.dev . Não é aconselhamento jurídico._"
+            ),
+        }
+    else:
+        t = {
+            "en": (
+                "\n\n---\n_The answer above is the full **primary** result (quality review has already been applied). "
+                "A follow-up check suggested **optional** Serper web search, but that refinement step did not return an "
+                "updated version—often a temporary error, timeout, or empty result. You can retry with a more specific "
+                "legal topic if needed. Not legal advice._"
+            ),
+            "es": (
+                "\n\n---\n_La respuesta de arriba es el resultado **principal** completo (la revisión de calidad ya se "
+                "aplicó). Un control posterior sugirió búsqueda web **opcional** con Serper, pero el refinado no devolvió "
+                "versión actualizada (error temporal, tiempo de espera, etc.). Puede reintentar con un tema legal más "
+                "concreto. No es asesoramiento legal._"
+            ),
+            "fr": (
+                "\n\n---\n_La réponse ci-dessus est le résultat **principal** complet (revue de qualité déjà faite). "
+                "Un contrôle a suggéré une recherche **optionnelle** Serper, mais l’affinement n’a pas produit de texte "
+                "mis à jour (erreur temporaire, délai, etc.). Vous pouvez relancer avec une question juridique plus "
+                "précise. Ce n’est pas un avis juridique._"
+            ),
+            "de": (
+                "\n\n---\n_Der Text oben ist die vollständige **Haupt**antwort (Qualitätsprüfung war bereits im Prozess). "
+                "Ein Folgecheck empfahl **optionale** Serper-Suche, aber der Verfeinerungsschritt lieferte keine "
+                "aktualisierte Fassung (z. B. Fehler, Timeout). Gegebenenfalls mit präziserem Rechtsthema erneut versuchen. "
+                "Keine Rechtsberatung._"
+            ),
+            "pt": (
+                "\n\n---\n_A resposta acima é o resultado **principal** completo (revisão de qualidade já aplicada). "
+                "Uma verificação sugeriu busca **opcional** com Serper, mas o refinamento não retornou versão "
+                "atualizada (erro temporário, tempo limite, etc.). Tente de novo com um tópico jurídico mais específico, "
+                "se precisar. Não é aconselhamento jurídico._"
+            ),
+        }
     return t.get(code, t["en"])
 
 
-def build_research_user_query(user_message: str, response_language: str) -> str:
-    """Full agent input: language rules first, then the user’s legal request."""
+def build_research_user_query(
+    user_message: str,
+    response_language: str,
+) -> str:
+    """Full agent input: language rules first, then user context, then the user’s legal request."""
     header = build_response_language_block(response_language)
-    return f"{header}\n\n### Research request\nResearch this legal topic: {user_message}\n"
+    uctx = build_user_context_block()
+    return (
+        f"{header}\n\n{uctx}\n"
+        f"### Research request\nResearch this legal topic: {user_message}\n"
+    )
 
 
 def build_research_user_query_with_history(
@@ -166,8 +242,11 @@ def build_research_user_query_with_history(
     ``prior_turns`` items use keys ``role`` (``user`` | ``assistant``) and ``content``.
     """
     header = build_response_language_block(response_language)
+    uctx = build_user_context_block()
     if not prior_turns:
-        return build_research_user_query(current_user_message, response_language)
+        return build_research_user_query(
+            current_user_message, response_language
+        )
 
     lines = [
         "### Prior messages in this conversation (context only; answer the current request below).",
@@ -183,7 +262,7 @@ def build_research_user_query_with_history(
         f"{block}\n\n### Current request\n"
         f"Research this legal topic: {current_user_message}\n"
     )
-    return f"{header}\n\n{body}\n"
+    return f"{header}\n\n{uctx}\n{body}\n"
 
 
 def build_default_research_query(response_language: str) -> str:
@@ -332,7 +411,9 @@ def get_agent_instructions():
 
 **User-selected response language:** If the input begins with a section `### MANDATORY: response language`, you **must** write **every** part of your reply in that language (including your brief analysis, tool-side commentary, and any disclaimer) unless the user clearly overrides. Do not default to English when another language is mandated there.
 
-**Tone (always):** Be humane and respectful. Greetings and brief civility (e.g. "hi", "thanks") should be **acknowledged briefly** and warmly before you do anything else. If the user’s message is **not a concrete legal or factual research request**, do **not** rebuke or lecture them. Instead, respond in 2–4 sentences: acknowledge them, restate that you focus on **legal information and research (not personal legal advice)**, and **invite** them to describe a legal topic, situation, or question in their own words. **Never** use cold boilerplate like "your input does not specify a legal topic" or a list of demands; guide like a professional companion. **If and only if** they are asking a clear legal research or explain‑the‑news question, proceed with the steps below. Stay **strict to law‑related** substance for deep research, but be **gracious** about how you steer them there.
+**Tone (always):** Be humane, polite, and welcoming—like a trusted professional companion, not a gatekeeper. For greetings, use **only** what you can fairly infer from **Prior messages** and the **current request** (e.g. if they said “I’m Sam” or signed with a name). If they have not shared a name, use a friendly **“Hi there —”** (or the right locale equivalent). **Do not** use or invent a name from a user profile; you are not given one in this system prompt.
+
+Greetings and brief civility (e.g. "hi", "thanks") should be **acknowledged briefly** and warmly before you do anything else. If the user’s message is **not a concrete legal or factual research request** (e.g. small talk, personal trivia, "what is my name" without a legal angle), do **not** rebuke, lecture, or use stiff phrasing (avoid lines like *"seems to be asking about a personal identifier"* or similar). Instead, respond in **2–4 short sentences**: greet them, gently note that you specialize in **legal information and research (not personal legal advice)**, and **invite** them to share a **legal** topic, situation, or question in their own words. Show how you *can* help (e.g. name changes, identity and records *as legal topics*) without sounding cold. **Never** use dismissive or robotic boilerplate. **If and only if** they are asking a clear legal research or explain‑the‑news question, proceed with the steps below. Stay **strict to law‑related** substance for deep research, but be **gracious** about how you steer them there.
 
 CRITICAL: When you *do* run research, work quickly and efficiently. You have limited time.
 

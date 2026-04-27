@@ -207,8 +207,8 @@ function ChatSessionInner() {
             </p>
           ) : messages.length === 0 ? (
             <p className="py-12 text-center text-sm text-zinc-500 dark:text-zinc-400">
-              Start by typing a legal question. For document uploads, open
-              Contract analysis in the sidebar.
+              Start by typing a legal question. For contract analysis, open
+              Contract analysis in the sidebar and upload the document.
             </p>
           ) : (
             <ul className="mx-auto flex max-w-3xl flex-col gap-4">

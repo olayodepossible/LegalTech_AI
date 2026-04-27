@@ -144,6 +144,7 @@ resource "aws_apprunner_service" "researcher" {
           LEGAL_API_KEY       = var.legal_api_key
           OPENROUTER_API_KEY  = var.openrouter_api_key
           OPENAI_CHAT_MODEL   = var.openai_chat_model
+          SERPER_API_KEY      = var.serper_api_key
         }
       }
       image_repository_type = "ECR"

@@ -6,6 +6,7 @@ Handles all API routes with Clerk JWT authentication
 import os
 import json
 import logging
+import time
 from typing import Optional, Dict, Any
 from datetime import datetime
 from decimal import Decimal
@@ -17,6 +18,7 @@ import re
 from fastapi import FastAPI, HTTPException, Depends, status, Request, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel, Field, ValidationError
 import boto3
 from botocore.exceptions import ClientError
@@ -26,9 +28,22 @@ from fastapi_clerk_auth import ClerkConfig, ClerkHTTPBearer, HTTPAuthorizationCr
 
 from src import Database
 from src.schemas import (UserCreate, ActivityHistoryCreate)
+from src.flow_log import (
+    flow_span,
+    get_trace_id,
+    log_flow,
+    new_trace_id,
+    reset_trace_context,
+    set_trace_context,
+)
 
 from contract_analyst.schemas import ContractAnalysisResult
 from contract_analyst.service import analyze_contract_bytes
+
+try:
+    from api.rag_retrieval import retrieve_user_rag_context
+except ImportError:
+    from rag_retrieval import retrieve_user_rag_context
 
 # Load environment variables
 load_dotenv(override=True)
@@ -39,6 +54,7 @@ logging.basicConfig(level=logging.INFO)
 # Configure structured logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
+logging.getLogger("legaltech.flow").setLevel(logging.INFO)
 
 class StructuredLogger:
     @staticmethod
@@ -50,6 +66,21 @@ class StructuredLogger:
             "details": details
         }
         logger.info(json.dumps(log_entry))
+
+
+def _trace_id_from_request(request: Request) -> str:
+    rid = request.headers.get("x-request-id") or request.headers.get("X-Request-Id")
+    if rid and str(rid).strip():
+        return str(rid).strip()
+    evt = request.scope.get("aws.event")
+    if isinstance(evt, dict):
+        rc = evt.get("requestContext")
+        if isinstance(rc, dict):
+            for key in ("requestId", "connectionId"):
+                v = rc.get(key)
+                if v:
+                    return str(v)
+    return new_trace_id()
 
 
 def _schema_missing_response(exc: BaseException) -> Optional[HTTPException]:
@@ -83,6 +114,58 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def trace_middleware(request: Request, call_next):
+    trace_id = _trace_id_from_request(request)
+    request.state.trace_id = trace_id
+    tokens = set_trace_context(trace_id, "api")
+    t0 = time.perf_counter()
+    path = request.url.path
+    log_flow(
+        "request.start",
+        step="http",
+        method=request.method,
+        path=path,
+    )
+    try:
+        response = await call_next(request)
+        log_flow(
+            "request.end",
+            step="http",
+            method=request.method,
+            path=path,
+            status_code=response.status_code,
+            duration_ms=(time.perf_counter() - t0) * 1000,
+        )
+        response.headers["X-Request-Id"] = trace_id
+        return response
+    except StarletteHTTPException as exc:
+        log_flow(
+            "request.end",
+            step="http",
+            method=request.method,
+            path=path,
+            status_code=exc.status_code,
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            detail_preview=str(exc.detail)[:300] if exc.detail is not None else None,
+        )
+        raise
+    except Exception as exc:
+        log_flow(
+            "request.error",
+            step="http",
+            method=request.method,
+            path=path,
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            exc=exc,
+            level=logging.ERROR,
+        )
+        raise
+    finally:
+        reset_trace_context(tokens)
+
+
 # Custom exception handlers for better error messages
 @app.exception_handler(ValidationError)
 async def validation_exception_handler(request: Request, exc: ValidationError):
@@ -114,6 +197,14 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle unexpected errors gracefully"""
+    log_flow(
+        "request.unhandled_exception",
+        step="http",
+        path=request.url.path,
+        exc=exc,
+        trace_id=getattr(request.state, "trace_id", None) or get_trace_id(),
+        level=logging.ERROR,
+    )
     logger.error(f"Unexpected error: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
@@ -371,6 +462,7 @@ def research_handler(
     message: str,
     language: str | None,
     conversation_history: Optional[list[dict[str, str]]] = None,
+    trace_id: str | None = None,
 ) -> str:
     """Call App Runner ``POST /research`` and return the assistant reply text."""
     app_runner_url = (os.environ.get("APP_RUNNER_URL") or "").strip()
@@ -384,6 +476,7 @@ def research_handler(
     app_runner_url = app_runner_url.strip().rstrip("/")
 
     url = f"https://{app_runner_url}/research"
+    tid = trace_id or get_trace_id() or new_trace_id()
     payload: Dict[str, Any] = {
         "message": message,
         "language": language or "en",
@@ -395,19 +488,53 @@ def research_handler(
         url,
         data=data,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", "X-Request-Id": tid},
     )
 
+    t0 = time.perf_counter()
+    log_flow(
+        "downstream.start",
+        step="http.post",
+        target="researcher",
+        url_host=app_runner_url,
+        path="/research",
+        payload_bytes=len(data),
+        history_turns=len(conversation_history or []),
+    )
     try:
         with urllib.request.urlopen(req, timeout=180) as response:
             raw = response.read().decode("utf-8")
+        log_flow(
+            "downstream.end",
+            step="http.post",
+            target="researcher",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            response_bytes=len(raw.encode("utf-8")),
+            http_status=getattr(response, "status", 200),
+        )
     except urllib.error.HTTPError as e:
         err_body = e.read().decode("utf-8", errors="replace")
+        log_flow(
+            "downstream.error",
+            step="http.post",
+            target="researcher",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            http_status=e.code,
+            error_body_preview=err_body[:500],
+        )
         logger.error("Researcher HTTP %s: %s", e.code, err_body)
         raise RuntimeError(
             f"Research service returned HTTP {e.code}."
         ) from e
     except urllib.error.URLError as e:
+        log_flow(
+            "downstream.error",
+            step="http.post",
+            target="researcher",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            exc=e,
+            level=logging.ERROR,
+        )
         logger.exception("Could not reach research service: %s", e)
         raise RuntimeError("Could not reach research service") from e
 
@@ -610,10 +737,13 @@ async def get_legal_chat_messages(
 async def legal_chat(
     body: LegalChatRequest,
     clerk_user_id: str = Depends(get_current_user_id),
+    creds: HTTPAuthorizationCredentials = Depends(clerk_guard),
 ) -> LegalChatResponse:
     """
     General legal Q&A: persists each turn to the database and forwards to the
     research service (with prior turns as ``conversation_history`` when present).
+    If ``VECTOR_BUCKET``, ``INDEX_NAME``, and ``SAGEMAKER_ENDPOINT`` are set, relevant
+    chunks from the user's uploaded documents (RAG) are prepended to the request.
     """
     try:
         chat_uuid = uuid.UUID(body.chat_id)
@@ -623,7 +753,8 @@ async def legal_chat(
         ) from e
     cid = str(chat_uuid)
     try:
-        _ensure_user_row(clerk_user_id)
+        # Ensure ``users`` row (FK) and keep ``display_name`` / ``email`` aligned with Clerk (for greetings).
+        user_row, _ = _resolve_user_row(clerk_user_id, creds)
         owner = db.legal_chats.owner_clerk_id(cid)
         if owner and owner != clerk_user_id:
             raise HTTPException(
@@ -635,20 +766,58 @@ async def legal_chat(
                 clerk_user_id, cid, title="New chat", language=lang
             )
 
-        prior_rows = db.legal_chat_messages.list_for_chat(cid)
-        prior_for_llm: list[dict[str, str]] = [
-            {"role": m["role"], "content": m["content"]}
-            for m in prior_rows
-            if m.get("role") in ("user", "assistant")
-        ]
-        db.legal_chat_messages.insert_message(cid, "user", body.message, lang)
-        if len(prior_rows) == 0:
-            db.legal_chats.update_title(cid, _short_chat_title(body.message))
+        with flow_span(
+            "db.start",
+            "db.end",
+            step="legal_chat.load_history_and_save_user",
+            target="aurora",
+            chat_id=cid,
+        ):
+            prior_rows = db.legal_chat_messages.list_for_chat(cid)
+            prior_for_llm: list[dict[str, str]] = [
+                {"role": m["role"], "content": m["content"]}
+                for m in prior_rows
+                if m.get("role") in ("user", "assistant")
+            ]
+            db.legal_chat_messages.insert_message(cid, "user", body.message, lang)
+            if len(prior_rows) == 0:
+                db.legal_chats.update_title(cid, _short_chat_title(body.message))
+
+        with flow_span(
+            "rag.retrieve.start",
+            "rag.retrieve.end",
+            step="rag.context",
+            target="sagemaker_s3vectors",
+            clerk_user_id_prefix=(clerk_user_id[:12] + "…") if len(clerk_user_id) > 12 else clerk_user_id,
+        ):
+            rag_block = retrieve_user_rag_context(clerk_user_id, body.message)
+        message_for_research = body.message
+        if rag_block:
+            message_for_research = (
+                f"{rag_block}\n\n---\n\n"
+                f"### User message (respond in the selected response language)\n{body.message}"
+            )
+            log_flow(
+                "rag.context.attached",
+                step="rag.context",
+                target="sagemaker_s3vectors",
+                rag_chars=len(rag_block),
+            )
 
         reply = research_handler(
-            body.message, body.language, prior_for_llm
+            message_for_research,
+            body.language,
+            prior_for_llm,
+            trace_id=get_trace_id(),
         )
-        db.legal_chat_messages.insert_message(cid, "assistant", reply, lang)
+        with flow_span(
+            "db.start",
+            "db.end",
+            step="legal_chat.save_assistant",
+            target="aurora",
+            chat_id=cid,
+        ):
+            db.legal_chat_messages.insert_message(cid, "assistant", reply, lang)
         db.legal_chats.touch(cid)
         return LegalChatResponse(reply=reply)
     except HTTPException:
@@ -775,12 +944,19 @@ async def analyze_contract_document(
         raise HTTPException(status_code=400, detail="Empty file")
 
     try:
-        return await analyze_contract_bytes(
-            data=body,
-            filename=file.filename or "document",
-            user_message=message or None,
-            language=language or None,
-        )
+        with flow_span(
+            "contract_analyze.start",
+            "contract_analyze.end",
+            step="openrouter.contract_parse",
+            target="openrouter",
+            filename=file.filename,
+        ):
+            return await analyze_contract_bytes(
+                data=body,
+                filename=file.filename or "document",
+                user_message=message or None,
+                language=language or None,
+            )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     except RuntimeError as e:
@@ -915,8 +1091,15 @@ async def upload_rag_document(
             "clerk_user_id": clerk_user_id,
             "content_type": content_type,
             "original_filename": safe_name,
+            "api_trace_id": get_trace_id(),
         }
         try:
+            log_flow(
+                "downstream.start",
+                step="sqs.send_message",
+                target="rag_ingest_queue",
+                document_id=doc_id,
+            )
             qclient = _sqs_client_for_queue(queue_url)
             sm = qclient.send_message(
                 QueueUrl=queue_url,
@@ -926,6 +1109,14 @@ async def upload_rag_document(
             sqs_message_id = sm.get("MessageId")
             logger.info(
                 "rag ingest queued doc_id=%s message_id=%s", doc_id, sqs_message_id
+            )
+            log_flow(
+                "downstream.end",
+                step="sqs.send_message",
+                target="rag_ingest_queue",
+                document_id=doc_id,
+                sqs_message_id=sqs_message_id,
+                queue_url_host=(queue_url.split("/")[2] if "/" in queue_url else ""),
             )
         except Exception as e:
             logger.exception(

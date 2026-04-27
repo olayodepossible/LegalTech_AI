@@ -22,3 +22,15 @@ variable "openrouter_api_key" {
   type        = string
   sensitive   = true
 }
+
+# Align with terraform/2_sagemaker and terraform/3_ingestion (RAG retrieval in legal chat)
+variable "sagemaker_endpoint_name" {
+  description = "SageMaker embedding endpoint name (same as Part 2 / Part 3 ingest)"
+  type        = string
+}
+
+variable "vector_index_name" {
+  description = "S3 Vectors index name (same as 3_ingestion var.vector_index_name)"
+  type        = string
+  default     = "legal-research"
+}

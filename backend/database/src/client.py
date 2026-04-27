@@ -6,11 +6,15 @@ Provides a simple interface for database operations
 import boto3
 import json
 import os
-from typing import List, Dict, Any, Optional, Tuple
+import uuid
+from typing import List, Dict, Any, Optional
 from datetime import date, datetime
 from decimal import Decimal
 from botocore.exceptions import ClientError
 import logging
+import time
+
+from .flow_log import get_trace_id, log_flow
 
 # Try to load .env file if it exists
 try:
@@ -21,6 +25,39 @@ except ImportError:
     pass  # dotenv not installed, continue without it
 
 logger = logging.getLogger(__name__)
+
+# RDS Data API binds string parameters as text; columns typed UUID need an explicit ::uuid.
+_UUID_COLS = frozenset({"id", "chat_id"})
+
+
+def _is_uuid_str(value: Any) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def _value_placeholder(col: str, value: Any) -> str:
+    """Build named placeholder with server-side cast when needed."""
+    if isinstance(value, (dict, list)):
+        return f":{col}::jsonb"
+    if isinstance(value, Decimal):
+        return f":{col}::numeric"
+    if isinstance(value, date) and not isinstance(value, datetime):
+        return f":{col}::date"
+    if isinstance(value, datetime):
+        return f":{col}::timestamp"
+    if _is_uuid_str(value) and col in _UUID_COLS:
+        return f":{col}::uuid"
+    return f":{col}"
+
+
+def _set_expr(col: str, value: Any) -> str:
+    """SET col = :col with optional cast (matches :value placeholder typing)."""
+    return f"{col} = { _value_placeholder(col, value) }"
 
 
 class DataAPIClient:
@@ -66,6 +103,8 @@ class DataAPIClient:
         Returns:
             Response from Data API
         """
+        sql_preview = " ".join((sql or "").split())[:200]
+        t0 = time.perf_counter()
         try:
             kwargs = {
                 "resourceArn": self.cluster_arn,
@@ -79,9 +118,28 @@ class DataAPIClient:
                 kwargs["parameters"] = parameters
 
             response = self.client.execute_statement(**kwargs)
+            if os.environ.get("FLOW_LOG_DB_OK", "").strip().lower() in ("1", "true", "yes"):
+                log_flow(
+                    "db.execute.ok",
+                    step="rds_data.execute_statement",
+                    target="aurora",
+                    duration_ms=(time.perf_counter() - t0) * 1000,
+                    sql_preview=sql_preview,
+                    trace_id=get_trace_id(),
+                )
             return response
 
         except ClientError as e:
+            log_flow(
+                "db.execute.error",
+                step="rds_data.execute_statement",
+                target="aurora",
+                duration_ms=(time.perf_counter() - t0) * 1000,
+                sql_preview=sql_preview,
+                trace_id=get_trace_id(),
+                exc=e,
+                level=logging.ERROR,
+            )
             logger.error(f"Database error: {e}")
             raise
 
@@ -142,20 +200,7 @@ class DataAPIClient:
             Value of returning column if specified
         """
         columns = list(data.keys())
-        placeholders = []
-
-        # Check if columns need type casting
-        for col in columns:
-            if isinstance(data[col], (dict, list)):
-                placeholders.append(f":{col}::jsonb")
-            elif isinstance(data[col], Decimal):
-                placeholders.append(f":{col}::numeric")
-            elif isinstance(data[col], date) and not isinstance(data[col], datetime):
-                placeholders.append(f":{col}::date")
-            elif isinstance(data[col], datetime):
-                placeholders.append(f":{col}::timestamp")
-            else:
-                placeholders.append(f":{col}")
+        placeholders = [_value_placeholder(col, data[col]) for col in columns]
 
         sql = f"""
             INSERT INTO {table} ({", ".join(columns)})
@@ -188,18 +233,7 @@ class DataAPIClient:
             Number of affected rows
         """
         # Build SET clause with type casting where needed
-        set_parts = []
-        for col, val in data.items():
-            if isinstance(val, (dict, list)):
-                set_parts.append(f"{col} = :{col}::jsonb")
-            elif isinstance(val, Decimal):
-                set_parts.append(f"{col} = :{col}::numeric")
-            elif isinstance(val, date) and not isinstance(val, datetime):
-                set_parts.append(f"{col} = :{col}::date")
-            elif isinstance(val, datetime):
-                set_parts.append(f"{col} = :{col}::timestamp")
-            else:
-                set_parts.append(f"{col} = :{col}")
+        set_parts = [_set_expr(col, val) for col, val in data.items()]
 
         set_clause = ", ".join(set_parts)
 

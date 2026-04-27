@@ -1,35 +1,73 @@
 """
 Tools for the Legal Companion Researcher agent
 """
+import logging
 import os
+import time
 from typing import Dict, Any
 from datetime import datetime, UTC
 import httpx
 from agents import function_tool
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# Configuration from environment
+from flow_log import log_flow
+
+# Configuration from environment (read at import time for legal API; Serper is read lazily so
+# ``load_dotenv`` in ``server.py`` always runs first for local dev).
 LEGAL_API_ENDPOINT = os.getenv("LEGAL_API_ENDPOINT")
 LEGAL_API_KEY = os.getenv("LEGAL_API_KEY")
-SERPER_API_KEY = (os.getenv("SERPER_API_KEY") or "").strip()
-SERPER_SEARCH_URL = (os.getenv("SERPER_SEARCH_URL") or "https://google.serper.dev/search").strip()
+
+
+def _serper_api_key() -> str:
+    return (os.getenv("SERPER_API_KEY") or "").strip()
+
+
+def _serper_search_url() -> str:
+    return (os.getenv("SERPER_SEARCH_URL") or "https://google.serper.dev/search").strip()
 
 
 def serper_search_configured() -> bool:
-    return bool(SERPER_API_KEY)
+    return bool(_serper_api_key())
 
 
 def _ingest(document: Dict[str, Any]) -> Dict[str, Any]:
     """Internal function to make the actual API call."""
-    with httpx.Client() as client:
-        response = client.post(
-            LEGAL_API_ENDPOINT,
-            json=document,
-            headers={"x-api-key": LEGAL_API_KEY},
-            timeout=30.0
+    ep = (LEGAL_API_ENDPOINT or "").strip()
+    t0 = time.perf_counter()
+    log_flow(
+        "downstream.start",
+        step="http.post",
+        target="legal_api_ingest",
+        url_host=ep.split("/")[2] if ep.startswith("http") and "/" in ep[8:] else ep[:80],
+    )
+    try:
+        with httpx.Client() as client:
+            response = client.post(
+                LEGAL_API_ENDPOINT,
+                json=document,
+                headers={"x-api-key": LEGAL_API_KEY},
+                timeout=30.0
+            )
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:
+        log_flow(
+            "downstream.error",
+            step="http.post",
+            target="legal_api_ingest",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            exc=exc,
+            level=logging.ERROR,
         )
-        response.raise_for_status()
-        return response.json()
+        raise
+    log_flow(
+        "downstream.end",
+        step="http.post",
+        target="legal_api_ingest",
+        duration_ms=(time.perf_counter() - t0) * 1000,
+        http_status=200,
+    )
+    return data
 
 
 @retry(
@@ -48,28 +86,59 @@ def serper_google_search(query: str, num_results: int = 8) -> str:
 
     Use 1–3 focused queries; prefer shorter queries and call again if you need a different angle.
     """
-    if not SERPER_API_KEY:
+    key = _serper_api_key()
+    if not key:
         return (
             "Error: Serper is not configured (set SERPER_API_KEY in the environment for Google search)."
         )
     n = max(1, min(int(num_results), 15))
+    t0 = time.perf_counter()
+    log_flow(
+        "downstream.start",
+        step="http.post",
+        target="serper",
+        query_chars=len(query),
+        num_results=n,
+    )
     try:
         with httpx.Client() as client:
             res = client.post(
-                SERPER_SEARCH_URL,
+                _serper_search_url(),
                 json={"q": query, "num": n},
                 headers={
-                    "X-API-KEY": SERPER_API_KEY,
+                    "X-API-KEY": key,
                     "Content-Type": "application/json",
                 },
                 timeout=30.0,
             )
             text = res.text
             if not res.is_success:
+                log_flow(
+                    "downstream.error",
+                    step="http.post",
+                    target="serper",
+                    duration_ms=(time.perf_counter() - t0) * 1000,
+                    http_status=res.status_code,
+                )
                 return f"Serper API error (HTTP {res.status_code}): {text[:2000]}"
             data = res.json()
     except Exception as e:
+        log_flow(
+            "downstream.error",
+            step="http.post",
+            target="serper",
+            duration_ms=(time.perf_counter() - t0) * 1000,
+            exc=e,
+            level=logging.WARNING,
+        )
         return f"Serper request failed: {e}"
+    log_flow(
+        "downstream.end",
+        step="http.post",
+        target="serper",
+        duration_ms=(time.perf_counter() - t0) * 1000,
+        http_status=res.status_code,
+    )
 
     lines: list[str] = []
     organic = data.get("organic")

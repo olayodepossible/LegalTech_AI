@@ -37,3 +37,11 @@ variable "openai_chat_model" {
   type        = string
   default     = "gpt-4.1-mini"
 }
+
+# Optional Google search refinement (https://serper.dev) — same as .env SERPER_API_KEY
+variable "serper_api_key" {
+  description = "Serper API key for optional refinement pass (Google search via serper.dev)"
+  type        = string
+  sensitive   = true
+  default     = ""
+}

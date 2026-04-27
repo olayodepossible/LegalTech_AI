@@ -18,3 +18,7 @@ openrouter_api_key = "sk-or-v1-your-key-here"
 # Apply Part 4 first so ../4_researcher/terraform.tfstate exists and includes the researcher service.
 
 # RAG uploads use the Part 3 vectors bucket `legal-companion-vectors-<account>`; apply terraform/3_ingestion first so it exists.
+# The RAG ingest SQS queue `legal-companion-rag-ingest` is created in Part 3 — apply Part 3 before Part 7 or the queue data source will fail.
+# SageMaker embedding endpoint (same name as in 2_sagemaker / 3_ingestion)
+sagemaker_endpoint_name = "your-sagemaker-embedding-endpoint"
+# vector_index_name = "legal-research"
