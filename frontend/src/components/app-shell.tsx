@@ -12,7 +12,11 @@ const nav: {
   label: string;
   isActive: (p: string) => boolean;
 }[] = [
-  { href: "/dashboard", label: "Home", isActive: (p) => p === "/dashboard" },
+  {
+    href: "/dashboard/",
+    label: "Home",
+    isActive: (p) => p === "/dashboard" || p === "/dashboard/",
+  },
   {
     href: "/chat",
     label: "New Chat",
@@ -122,6 +126,7 @@ function IconMenu({ className }: { className?: string }) {
 
 const iconFor = (href: string) => {
   switch (href) {
+    case "/dashboard/":
     case "/dashboard":
       return IconHome;
     case "/chat":
@@ -167,7 +172,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         >
           <div className="flex h-14 shrink-0 items-center gap-3 border-b border-zinc-100 px-4 dark:border-zinc-800/80">
             <Link
-              href="/dashboard"
+              href="/dashboard/"
               className="flex min-w-0 items-center gap-2.5 rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/50"
               onClick={() => setMobileNavOpen(false)}
             >

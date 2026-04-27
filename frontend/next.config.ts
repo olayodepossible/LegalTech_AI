@@ -2,12 +2,13 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
-  output: 'export',
+  output: "export",
   images: {
-    unoptimized: true
+    unoptimized: true,
   },
-  // Disable automatic trailing slash redirect for API routes
-  trailingSlash: false,
+  // S3 website hosting serves `/dashboard/` from `dashboard/index.html`.
+  // Without this, `/dashboard` falls through to `/index.html` and loops.
+  trailingSlash: true,
 };
 
 export default nextConfig;

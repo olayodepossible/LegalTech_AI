@@ -14,7 +14,7 @@ export default function Custom500() {
           <p className="text-gray-600 mb-8">
             Something went wrong on our end. Please try again later.
           </p>
-          <Link href="/dashboard">
+          <Link href="/dashboard/">
             <button className="bg-primary hover:bg-blue-600 text-white px-6 py-3 rounded-lg transition-colors">
               Return to Dashboard
             </button>

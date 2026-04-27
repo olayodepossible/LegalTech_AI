@@ -7,8 +7,9 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo } from "react";
 
 /**
- * While Clerk finishes handshake / session sync, avoid `router.replace` so we
- * do not strip `__clerk_*` params or bounce before `isSignedIn` matches `userId`.
+ * While Clerk finishes handshake / session sync, avoid redirecting signed-out
+ * users so we do not strip `__clerk_*` params. Once Clerk reports signed in,
+ * render immediately even if the transient query param is still in the URL.
  */
 export function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const { isLoaded, isSignedIn } = useAuth();
@@ -18,16 +19,17 @@ export function ProtectedLayout({ children }: { children: React.ReactNode }) {
     () => isClerkAuthUrlPending(searchParams),
     [searchParams],
   );
+  const waitingForClerk = !isLoaded || (clerkFlowPending && !isSignedIn);
 
   useEffect(() => {
-    if (clerkFlowPending || !isLoaded || isSignedIn) return;
+    if (waitingForClerk || isSignedIn) return;
     const t = window.setTimeout(() => {
-      router.replace("/login");
+      router.replace("/login/");
     }, 400);
     return () => clearTimeout(t);
-  }, [isLoaded, isSignedIn, router, clerkFlowPending]);
+  }, [waitingForClerk, isSignedIn, router]);
 
-  if (!isLoaded || clerkFlowPending) {
+  if (waitingForClerk) {
     return (
       <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />

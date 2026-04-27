@@ -10,20 +10,21 @@ function HomeRedirect() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const clerkPending = isClerkAuthUrlPending(searchParams);
+  const waitingForClerk = !isLoaded || (clerkPending && !isSignedIn);
 
   useEffect(() => {
-    if (!isLoaded || clerkPending) return;
+    if (waitingForClerk) return;
     const t = window.setTimeout(() => {
-      router.replace(isSignedIn ? "/dashboard" : "/login");
+      router.replace(isSignedIn ? "/dashboard/" : "/login/");
     }, 0);
     return () => clearTimeout(t);
-  }, [isLoaded, isSignedIn, clerkPending, router]);
+  }, [waitingForClerk, isSignedIn, router]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-zinc-50 text-zinc-600 dark:bg-zinc-950 dark:text-zinc-400">
       <div className="h-10 w-10 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
       <p className="text-sm">
-        {clerkPending ? "Completing sign-in…" : "Redirecting…"}
+        {waitingForClerk ? "Completing sign-in…" : "Redirecting…"}
       </p>
     </div>
   );

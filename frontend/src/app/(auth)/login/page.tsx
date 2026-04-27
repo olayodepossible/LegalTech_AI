@@ -1,28 +1,19 @@
 "use client";
 
-import { Show, SignInButton, SignUpButton, useAuth } from "@clerk/react";
+import { RedirectIfSignedIn } from "@/components/redirect-if-signed-in";
+import { Show, SignInButton, SignUpButton } from "@clerk/react";
 import Image from "next/image";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
 
-const DASHBOARD = "/dashboard";
+const DASHBOARD = "/dashboard/";
 
 
 export default function LoginPage() {
-  const { isSignedIn, isLoaded } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (isLoaded && isSignedIn) {
-      router.replace("/dashboard");
-    }
-  }, [isLoaded, isSignedIn, router]);
-
-  if (!isLoaded) return null;
   return (
     <>
-      
+      <Show when="signed-in">
+        <RedirectIfSignedIn to={DASHBOARD} />
+      </Show>
       <Show when="signed-out">
         <div className="flex min-h-screen flex-col">
           <header className="sticky top-0 z-30 border-b border-zinc-200/90 bg-white/95 shadow-sm backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95">
@@ -47,6 +38,7 @@ export default function LoginPage() {
               <div className="flex shrink-0 items-center gap-2 sm:gap-3">
               <SignUpButton
                 mode="modal"
+                forceRedirectUrl={DASHBOARD}
                 fallbackRedirectUrl={DASHBOARD}
               >
                   <button
@@ -58,6 +50,7 @@ export default function LoginPage() {
                 </SignUpButton>
                 <SignInButton
                   mode="modal"
+                  forceRedirectUrl={DASHBOARD}
                   fallbackRedirectUrl={DASHBOARD}
                 >
                   <button
