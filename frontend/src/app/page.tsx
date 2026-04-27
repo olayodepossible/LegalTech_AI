@@ -1,22 +1,45 @@
 "use client";
 
+import { isClerkAuthUrlPending } from "@/lib/clerk-auth-flow";
 import { useAuth } from "@clerk/react";
-import { useRouter } from "next/navigation";
-import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { Suspense, useEffect } from "react";
 
-export default function Home() {
+function HomeRedirect() {
   const { isSignedIn, isLoaded } = useAuth();
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const clerkPending = isClerkAuthUrlPending(searchParams);
 
   useEffect(() => {
-    if (!isLoaded) return;
-    router.replace(isSignedIn ? "/dashboard" : "/login");
-  }, [isLoaded, isSignedIn, router]);
+    if (!isLoaded || clerkPending) return;
+    const t = window.setTimeout(() => {
+      router.replace(isSignedIn ? "/dashboard" : "/login");
+    }, 0);
+    return () => clearTimeout(t);
+  }, [isLoaded, isSignedIn, clerkPending, router]);
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-zinc-50 text-zinc-600 dark:bg-zinc-950 dark:text-zinc-400">
       <div className="h-10 w-10 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-      <p className="text-sm">Redirecting…</p>
+      <p className="text-sm">
+        {clerkPending ? "Completing sign-in…" : "Redirecting…"}
+      </p>
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex min-h-screen flex-col items-center justify-center gap-3 bg-zinc-50 text-zinc-600 dark:bg-zinc-950 dark:text-zinc-400">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
+          <p className="text-sm">Loading…</p>
+        </div>
+      }
+    >
+      <HomeRedirect />
+    </Suspense>
   );
 }

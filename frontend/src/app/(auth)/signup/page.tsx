@@ -1,6 +1,5 @@
 "use client";
 
-import { RedirectIfSignedIn } from "@/components/redirect-if-signed-in";
 import { Show, SignInButton, SignUpButton } from "@clerk/react";
 import Image from "next/image";
 import Link from "next/link";
@@ -16,9 +15,6 @@ const outlineBtnClass =
 export default function SignupPage() {
   return (
     <>
-      <Show when="signed-in">
-        <RedirectIfSignedIn to={DASHBOARD} />
-      </Show>
       <Show when="signed-out">
         <div className="flex min-h-screen flex-col">
           <header className="border-b border-zinc-200/90 bg-white/95 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95">
@@ -52,7 +48,6 @@ export default function SignupPage() {
                 <div className="mt-8 flex flex-col gap-3">
                   <SignUpButton
                     mode="modal"
-                    forceRedirectUrl={DASHBOARD}
                     fallbackRedirectUrl={DASHBOARD}
                   >
                     <button type="button" className={btnClass}>
@@ -61,7 +56,6 @@ export default function SignupPage() {
                   </SignUpButton>
                   <SignInButton
                     mode="modal"
-                    forceRedirectUrl={DASHBOARD}
                     fallbackRedirectUrl={DASHBOARD}
                   >
                     <button type="button" className={outlineBtnClass}>

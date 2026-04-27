@@ -1,41 +1,42 @@
 "use client";
 
 import { AppShell } from "@/components/app-shell";
+import { isClerkAuthUrlPending } from "@/lib/clerk-auth-flow";
 import { useAuth } from "@clerk/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useMemo } from "react";
 
 /**
- * Clerk may land on a protected route with `?__clerk_handshake=...` while it
- * exchanges cookies. If we redirect to /login before that finishes, we strip the
- * handshake and Clerk redirects back — an infinite loop.
+ * While Clerk finishes handshake / session sync, avoid `router.replace` so we
+ * do not strip `__clerk_*` params or bounce before `isSignedIn` matches `userId`.
  */
 export function ProtectedLayout({ children }: { children: React.ReactNode }) {
-  const { isLoaded, userId } = useAuth();
+  const { isLoaded, isSignedIn } = useAuth();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const clerkHandshakePending = useMemo(
-    () => Boolean(searchParams.get("__clerk_handshake")),
+  const clerkFlowPending = useMemo(
+    () => isClerkAuthUrlPending(searchParams),
     [searchParams],
   );
 
   useEffect(() => {
-    if (clerkHandshakePending) return;
-    if (isLoaded && !userId) {
+    if (clerkFlowPending || !isLoaded || isSignedIn) return;
+    const t = window.setTimeout(() => {
       router.replace("/login");
-    }
-  }, [isLoaded, userId, router, clerkHandshakePending]);
+    }, 400);
+    return () => clearTimeout(t);
+  }, [isLoaded, isSignedIn, router, clerkFlowPending]);
 
-  if (!isLoaded || clerkHandshakePending) {
+  if (!isLoaded || clerkFlowPending) {
     return (
       <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
-        {clerkHandshakePending ? "Completing sign-in…" : "Loading…"}
+        {clerkFlowPending ? "Completing sign-in…" : "Loading…"}
       </div>
     );
   }
 
-  if (!userId) {
+  if (!isSignedIn) {
     return (
       <div className="flex min-h-[50vh] flex-col items-center justify-center gap-2 text-sm text-zinc-500 dark:text-zinc-400">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent" />
