@@ -191,6 +191,13 @@ Use **`NEXT_PUBLIC_*`** for Clerk and the API base URL (often the same CloudFron
 - **Correlation:** log field `"channel": "service_flow"` with `trace_id`, `service`, `step`, `target`, and timings; API forwards **`X-Request-Id`** to the researcher and may set **`api_trace_id`** on RAG ingest messages.
 
 ---
+## Images
+
+![Landing Page: ](images/img.png)
+
+![Dashboard Page: after successful authorization flow through clerk ](images/img-1.png)
+
+---
 
 ## Related docs
 
