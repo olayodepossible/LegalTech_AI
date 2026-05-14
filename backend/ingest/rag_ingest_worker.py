@@ -153,10 +153,10 @@ def _process_message(payload: dict[str, Any]) -> None:
     now = datetime.now(UTC).isoformat()
     vectors: list[dict[str, Any]] = []
     for idx, chunk in enumerate(parts):
-        emb = _get_embedding(chunk[:8000])
+        emb = _get_embedding(chunk[:1000])
         vid = str(uuid.uuid4())
         meta = {
-            "text": chunk[:50000],
+            "text": chunk[:1000],
             "clerk_user_id": clerk_user_id,
             "document_id": document_id,
             "chunk_index": idx,

@@ -663,6 +663,11 @@ async def create_legal_chat(
     clerk_user_id: str = Depends(get_current_user_id),
 ) -> LegalChatListItem:
     """Create an empty chat row (or claim ``body.id`` if the row does not exist yet)."""
+    StructuredLogger.log_event(
+        "CHAT_TRIGGERED",
+        user_id=clerk_user_id,
+        details={"accounts": clerk_user_id}
+    )
     try:
         _ensure_user_row(clerk_user_id)
         try:

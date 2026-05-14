@@ -32,7 +32,6 @@ def main():
     # Get the API directory
     api_dir = Path(__file__).parent.absolute()
     backend_dir = api_dir.parent
-    project_root = backend_dir.parent
 
     print(f"API directory: {api_dir}")
     print(f"Backend directory: {backend_dir}")

@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 import boto3
 
-VECTOR_BUCKET = os.environ.get("VECTOR_BUCKET", "legal-vectors")
+VECTOR_BUCKET = os.environ.get("VECTOR_BUCKET", "legal-vector")
 SAGEMAKER_ENDPOINT = os.environ.get("SAGEMAKER_ENDPOINT")
 INDEX_NAME = os.environ.get("INDEX_NAME", "legal-research")
 
